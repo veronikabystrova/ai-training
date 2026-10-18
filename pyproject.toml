@@ -1,0 +1,72 @@
+[project]
+name = "trainer-platform"
+version = "0.1.0"
+description = "Epic-01 Identity & Tenancy API"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.0",
+    "argon2-cffi>=25.1",
+    "arq>=0.28.0",
+    "asyncpg>=0.32.0",
+    "boto3>=1.43.114",
+    "defusedxml>=0.7.1",
+    "fastapi>=0.144.0",
+    "limits[async-redis]>=5.8",
+    "pydantic-settings>=2.16.0",
+    "pydantic[email]>=2.14.1",
+    "pyjwt>=2.15",
+    "python-multipart>=0.0.32",
+    "redis>=5.3.1",
+    "sqlalchemy[asyncio]>=2.1.5",
+    "structlog>=26.1.0",
+    "uuid-utils>=1.0",
+    "uvicorn[standard]>=0.54.0",
+    "zxcvbn>=4.5",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".claude", ".worktrees", "specs", "tasks", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["testcontainers.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+markers = [
+    "gate: merge-gate tests run on every CI run",
+    "concurrency: uses committed data and parallel connections",
+]
+
+[dependency-groups]
+dev = [
+    "boto3-stubs[s3]>=1.43.114",
+    "freezegun>=1.5.5",
+    "httpx>=0.28.1",
+    "mypy>=2.4.0",
+    "pip-audit>=2.10.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.1",
+    "testcontainers[postgres,redis]>=4.13.3",
+    "types-defusedxml>=0.7.0.20260504",
+    "types-zxcvbn>=4.5.0.20260518",
+]
