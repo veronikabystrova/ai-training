@@ -75,6 +75,7 @@ async def login(
     "/refresh",
     response_model=TokenPair,
     summary="Rotate a refresh token",
+    dependencies=[Depends(rate_limit(RouteClass.default_principal, by_ip=True))],
     responses={
         401: {
             "description": "INVALID_REFRESH_TOKEN, REFRESH_REUSE_DETECTED or IMPERSONATION_EXPIRED"
@@ -92,6 +93,7 @@ async def refresh(
     "/logout",
     status_code=204,
     summary="Revoke the caller's refresh family",
+    dependencies=[Depends(rate_limit(RouteClass.default_principal))],
     responses={
         401: {"description": "Not authenticated"},
         404: {"description": "NOT_FOUND"},

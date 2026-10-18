@@ -393,13 +393,16 @@ _IP_CLASSES = frozenset({RouteClass.login_ip, RouteClass.register_ip, RouteClass
 _PRINCIPAL_CLASSES = frozenset({RouteClass.verify_resend_user, RouteClass.default_principal})
 
 
-def rate_limit(route_class: RouteClass) -> Callable[..., Awaitable[None]]:
+def rate_limit(route_class: RouteClass, *, by_ip: bool = False) -> Callable[..., Awaitable[None]]:
     """Dependency factory. IP classes key on the client address, principal classes on the user.
+
+    ``by_ip=True`` keys a principal class on the client address instead, for routes that have
+    no principal (the default limit on ``/auth/refresh``; user decision 2026-10-18).
 
     Email-keyed classes are counted by the service, which has the validated email; asking for
     one here is a programming error. A Redis outage fails open (see ``RateLimiter.hit``).
     """
-    if route_class in _IP_CLASSES:
+    if route_class in _IP_CLASSES or (by_ip and route_class in _PRINCIPAL_CLASSES):
 
         async def _by_ip(request: Request, limiter: RateLimiterDep) -> None:
             await limiter.hit(route_class, request.client.host if request.client else "unknown")

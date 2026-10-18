@@ -446,3 +446,31 @@ async def test_logout_twice_is_idempotent(client: AsyncClient, make_user: MakeUs
     headers = bearer(body["tokens"]["access_token"])
     assert (await client.post(LOGOUT, json=payload, headers=headers)).status_code == 204
     assert (await client.post(LOGOUT, json=payload, headers=headers)).status_code == 204
+
+
+# --- default rate limit (300/min: per IP on refresh, per principal on logout) ---------------
+
+
+async def test_refresh_default_rate_limit_300_per_minute_per_ip(client: AsyncClient) -> None:
+    body = {"refresh_token": "x" * 43}
+    for _ in range(300):
+        assert (await client.post(REFRESH, json=body)).status_code == 401
+    r = await client.post(REFRESH, json=body)
+    assert r.status_code == 429
+    assert code(r) == "RATE_LIMITED"
+    assert int(r.headers["Retry-After"]) >= 1
+
+
+async def test_logout_default_rate_limit_300_per_minute_per_principal(
+    client: AsyncClient, make_user: MakeUser
+) -> None:
+    await make_user(email="a@x.com")
+    await make_user(email="b@x.com")
+    a = bearer((await login(client, "a@x.com"))["tokens"]["access_token"])
+    b = bearer((await login(client, "b@x.com"))["tokens"]["access_token"])
+    body = {"refresh_token": "x" * 43}
+    for _ in range(300):
+        assert (await client.post(LOGOUT, json=body, headers=a)).status_code == 404
+    assert (await client.post(LOGOUT, json=body, headers=a)).status_code == 429
+    # Another principal on the same IP keeps its own budget.
+    assert (await client.post(LOGOUT, json=body, headers=b)).status_code == 404
