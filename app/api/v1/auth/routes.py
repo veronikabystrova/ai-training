@@ -1,6 +1,9 @@
 from typing import Annotated, Any
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 
 from app.api.deps import (
     ClockDep,
@@ -8,6 +11,7 @@ from app.api.deps import (
     HasherDep,
     IssuerDep,
     JobQueueDep,
+    OptionalAnyTenurePrincipalDep,
     PasswordPolicyDep,
     PrincipalDep,
     RateLimiterDep,
@@ -16,22 +20,31 @@ from app.api.deps import (
     rate_limit,
 )
 from app.api.v1.auth.schemas import (
+    LinkedResponse,
     LoginRequest,
     LogoutRequest,
     PasswordResetConfirm,
     PasswordResetRequest,
     PasswordSetupRequest,
     RefreshRequest,
+    RegisterRequest,
     StatusResponse,
     VerifyEmailRequest,
     auth_response,
+    session_user,
     token_pair,
 )
 from app.api.v1.common import AuthResponse, TokenPair
+from app.core.errors import UnprocessableError
 from app.core.ratelimit import RouteClass
 from app.repositories.audit import AuditRepository
 from app.services.audit_service import DbAuditService
 from app.services.auth_service import AuthService
+from app.services.sharelink_service import (
+    Registered,
+    RegisterInput,
+    ShareLinkService,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -60,6 +73,29 @@ def get_auth_service(
 
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+
+
+def get_share_link_service(
+    session: SessionDep,
+    settings: SettingsDep,
+    clock: ClockDep,
+    hasher: HasherDep,
+    policy: PasswordPolicyDep,
+    jobs: JobQueueDep,
+    auth: AuthServiceDep,
+) -> ShareLinkService:
+    return ShareLinkService(
+        session=session,
+        settings=settings,
+        clock=clock,
+        hasher=hasher,
+        policy=policy,
+        jobs=jobs,
+        auth=auth,
+    )
+
+
+ShareLinkServiceDep = Annotated[ShareLinkService, Depends(get_share_link_service)]
 
 _ERRORS: dict[int | str, dict[str, Any]] = {
     422: {"description": "Validation error"},
@@ -197,3 +233,69 @@ async def password_setup(
             token=payload.token, new_password=payload.new_password, client=client
         )
     )
+
+
+def _exactly_one_source(
+    share_code: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    camp_submission_id: Annotated[UUID | None, Query()] = None,
+) -> tuple[str | None, UUID | None]:
+    if (share_code is None) == (camp_submission_id is None):
+        raise UnprocessableError(
+            details=[
+                {
+                    "field": "share_code",
+                    "message": "exactly one of share_code or camp_submission_id is required",
+                }
+            ]
+        )
+    return share_code, camp_submission_id
+
+
+@router.post(
+    "/register",
+    status_code=201,
+    response_model=AuthResponse,
+    summary="Register via ShareLink or camp submission",
+    dependencies=[Depends(rate_limit(RouteClass.register_ip))],
+    responses={
+        200: {"model": LinkedResponse, "description": "Authenticated user linked"},
+        403: {"description": "LINK_EMAIL_MISMATCH, CHILD_CANNOT_REDEEM or EMAIL_NOT_VERIFIED"},
+        404: {"description": "SHARE_LINK_INVALID or NOT_FOUND"},
+        409: {
+            "description": "ACCOUNT_EXISTS, WRONG_LINK_KIND, COACH_ALREADY_ASSIGNED or EMAIL_TAKEN"
+        },
+        **_ERRORS,
+    },
+)
+async def register(
+    payload: RegisterRequest,
+    source: Annotated[tuple[str | None, UUID | None], Depends(_exactly_one_source)],
+    principal: OptionalAnyTenurePrincipalDep,
+    service: ShareLinkServiceDep,
+    client: FingerprintDep,
+) -> AuthResponse | JSONResponse:
+    share_code, _camp_submission_id = source
+    if share_code is None:
+        await service.register_with_camp_submission()
+    result = await service.redeem(
+        code=share_code,
+        data=RegisterInput(
+            email=payload.email,
+            password=payload.password,
+            first_name=payload.first_name,
+            last_name=payload.last_name,
+            phone=payload.phone,
+            timezone=payload.timezone,
+            player_profile_ids=payload.player_profile_ids,
+        ),
+        client=client,
+        caller_id=principal.user_id if principal else None,
+        caller_is_child=principal.child if principal else False,
+    )
+    if isinstance(result, Registered):
+        return auth_response(result.issued)
+    body = LinkedResponse(
+        user=session_user(result.user, trainer_id=result.trainer_id, child=result.child),
+        linked_trainer_id=result.linked_trainer_id,
+    )
+    return JSONResponse(jsonable_encoder(body), status_code=200)

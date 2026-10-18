@@ -232,7 +232,13 @@ def _uuid_claim(claims: dict[str, Any], name: str) -> UUID | None:
 
 
 async def _authenticate(
-    request: Request, session: AsyncSession, issuer: TokenIssuer, clock: Clock, token: str
+    request: Request,
+    session: AsyncSession,
+    issuer: TokenIssuer,
+    clock: Clock,
+    token: str,
+    *,
+    any_tenure: bool = False,
 ) -> Principal:
     claims = issuer.decode(token)
     user_id = _uuid_claim(claims, "sub")
@@ -252,10 +258,16 @@ async def _authenticate(
     if row.role is Role.trainer:
         trainer_id = user_id
     elif row.role is Role.coach:
-        # DB is authoritative: a moved coach holds a stale token and must refresh.
-        if row.coach_trainer_id is None or token_tid != row.coach_trainer_id:
-            raise UnauthorizedError()
-        trainer_id = row.coach_trainer_id
+        if any_tenure:
+            # Coach move (``POST /auth/register`` only): a coach without an active tenure is
+            # accepted with ``trainer_id=None``; a stale ``tid`` is tolerated because the
+            # caller is about to change tenant and only needs to be identified.
+            trainer_id = row.coach_trainer_id
+        else:
+            # DB is authoritative: a moved coach holds a stale token and must refresh.
+            if row.coach_trainer_id is None or token_tid != row.coach_trainer_id:
+                raise UnauthorizedError()
+            trainer_id = row.coach_trainer_id
 
     if act is not None and (
         not row.session_found
@@ -266,7 +278,11 @@ async def _authenticate(
     ):
         raise UnauthorizedError("IMPERSONATION_EXPIRED", "Impersonation session expired")
 
-    if row.role is Role.coach and row.tenant_status is not UserStatus.active:
+    if (
+        row.role is Role.coach
+        and row.coach_trainer_id is not None
+        and row.tenant_status is not UserStatus.active
+    ):
         raise NotFoundError()  # G-15: deactivated tenant is invisible to its coaches
 
     principal = Principal(
@@ -301,7 +317,33 @@ async def optional_principal(
     return await _authenticate(request, session, issuer, clock, token)
 
 
+async def current_principal_any_tenure(
+    request: Request, session: SessionDep, issuer: IssuerDep, clock: ClockDep
+) -> Principal:
+    """``current_principal`` that also accepts a coach without an active tenure.
+
+    Used only on ``POST /auth/register`` (authenticated coach move, decision 2026-10-18).
+    Every other route keeps the 401.
+    """
+    token = _bearer_token(request)
+    if token is None:
+        raise UnauthorizedError()
+    return await _authenticate(request, session, issuer, clock, token, any_tenure=True)
+
+
+async def optional_principal_any_tenure(
+    request: Request, session: SessionDep, issuer: IssuerDep, clock: ClockDep
+) -> Principal | None:
+    """``current_principal_any_tenure``, or ``None`` when there is no ``Authorization``."""
+    token = _bearer_token(request)
+    if token is None:
+        return None
+    return await _authenticate(request, session, issuer, clock, token, any_tenure=True)
+
+
 PrincipalDep = Annotated[Principal, Depends(current_principal)]
+AnyTenurePrincipalDep = Annotated[Principal, Depends(current_principal_any_tenure)]
+OptionalAnyTenurePrincipalDep = Annotated[Principal | None, Depends(optional_principal_any_tenure)]
 OptionalPrincipalDep = Annotated[Principal | None, Depends(optional_principal)]
 
 

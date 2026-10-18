@@ -252,7 +252,7 @@ async def test_verify_resend_202_then_already_verified_200_and_limit_3_per_hour(
     second = await client.post(RESEND, headers=headers)
     assert second.status_code == 202
     first_token, second_token = (j.kwargs["token"] for j in jobs.enqueued)
-    assert [j.name for j in jobs.enqueued] == ["send_email_verification"] * 2
+    assert [j.name for j in jobs.enqueued] == ["send_verification_email"] * 2
     # Supersedes: only the latest token verifies.
     assert code(await client.post(VERIFY, json={"token": first_token})) == "TOKEN_INVALID"
     assert (await client.post(VERIFY, json={"token": second_token})).status_code == 204

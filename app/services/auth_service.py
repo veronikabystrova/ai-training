@@ -106,13 +106,14 @@ class AuthService:
             user.password_hash = await self._hasher.hash(password)
         user.last_login_at = self._clock.now()
 
-        issued = await self._issue_session(user, client)
+        issued = await self.issue_session(user, client)
         await self._session.commit()
         return issued
 
-    async def _issue_session(self, user: User, client: ClientFingerprint) -> IssuedSession:
-        trainer_id = await self._tenant_of(user)
-        child = await self._is_child(user)
+    async def issue_session(self, user: User, client: ClientFingerprint) -> IssuedSession:
+        """Access token plus a new refresh family; the caller commits."""
+        trainer_id = await self.tenant_of(user)
+        child = await self.is_child(user)
         access, _ = self._issuer.issue_access(
             user_id=user.id, role=user.role.value, trainer_id=trainer_id, act=None, child=child
         )
@@ -126,7 +127,7 @@ class AuthService:
         tokens = TokenSet(access, refresh, self._settings.access_ttl_seconds)
         return IssuedSession(tokens=tokens, user=user, trainer_id=trainer_id, child=child)
 
-    async def _tenant_of(self, user: User) -> UUID | None:
+    async def tenant_of(self, user: User) -> UUID | None:
         if user.role is UserRole.trainer:
             return user.id
         if user.role is UserRole.coach:
@@ -134,7 +135,7 @@ class AuthService:
             return tenure.trainer_id if tenure else None
         return None
 
-    async def _is_child(self, user: User) -> bool:
+    async def is_child(self, user: User) -> bool:
         if user.role is not UserRole.player:
             return False
         profile = await self._players.get_by_login_user(user.id)
@@ -193,8 +194,8 @@ class AuthService:
             act, jti = imp.admin_user_id, imp.jti
 
         # Claims are rebuilt from the DB: a moved coach gets the new tenant (A-03).
-        trainer_id = await self._tenant_of(user)
-        child = await self._is_child(user)
+        trainer_id = await self.tenant_of(user)
+        child = await self.is_child(user)
         access, _ = self._issuer.issue_access(
             user_id=user.id,
             role=user.role.value,
@@ -224,7 +225,7 @@ class AuthService:
 
     # --- password reset, email verification, trainer setup ----------------------------------
 
-    def _ott_ttl(self, purpose: OttPurpose) -> timedelta:
+    def ott_ttl(self, purpose: OttPurpose) -> timedelta:
         return timedelta(hours=self._settings.ott_ttl_hours[purpose.value])
 
     async def request_password_reset(self, *, email: str) -> None:
@@ -236,7 +237,7 @@ class AuthService:
         raw = await self._tokens.issue(
             user_id=user.id,
             purpose=OttPurpose.password_reset,
-            ttl=self._ott_ttl(OttPurpose.password_reset),
+            ttl=self.ott_ttl(OttPurpose.password_reset),
             now=self._clock.now(),
         )
         await self._session.commit()
@@ -287,11 +288,11 @@ class AuthService:
         raw = await self._tokens.issue(
             user_id=user.id,
             purpose=OttPurpose.email_verify,
-            ttl=self._ott_ttl(OttPurpose.email_verify),
+            ttl=self.ott_ttl(OttPurpose.email_verify),
             now=self._clock.now(),
         )
         await self._session.commit()
-        await self._jobs.enqueue("send_email_verification", user_id=str(user.id), token=raw)
+        await self._jobs.enqueue("send_verification_email", user_id=str(user.id), token=raw)
         return True
 
     async def setup_password(
@@ -318,6 +319,6 @@ class AuthService:
             subject_type="user",
             subject_id=user.id,
         )
-        issued = await self._issue_session(user, client)
+        issued = await self.issue_session(user, client)
         await self._session.commit()
         return issued

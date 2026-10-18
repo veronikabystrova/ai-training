@@ -1,8 +1,11 @@
 from typing import Literal
+from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.api.v1.common import AuthResponse, Password, SessionUser, TokenPair
+from app.models.identity import User
 from app.services.auth_service import IssuedSession, TokenSet
 
 
@@ -63,17 +66,49 @@ def token_pair(tokens: TokenSet) -> TokenPair:
     )
 
 
+def session_user(user: User, *, trainer_id: UUID | None, child: bool) -> SessionUser:
+    return SessionUser(
+        id=user.id,
+        role=user.role,
+        email=user.email,
+        email_verified=user.is_email_verified,
+        must_change_password=user.must_change_password,
+        trainer_id=trainer_id,
+        child=child,
+    )
+
+
 def auth_response(issued: IssuedSession) -> AuthResponse:
-    user = issued.user
     return AuthResponse(
         tokens=token_pair(issued.tokens),
-        user=SessionUser(
-            id=user.id,
-            role=user.role,
-            email=user.email,
-            email_verified=user.is_email_verified,
-            must_change_password=user.must_change_password,
-            trainer_id=issued.trainer_id,
-            child=issued.child,
-        ),
+        user=session_user(issued.user, trainer_id=issued.trainer_id, child=issued.child),
     )
+
+
+class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(max_length=255)
+    password: Password
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    phone: str | None = Field(default=None, max_length=32)
+    timezone: str = Field(default="UTC", max_length=64)
+    # A parent redeeming a static link for existing dependents; ``[]`` is rejected.
+    player_profile_ids: list[UUID] | None = Field(default=None, min_length=1)
+
+    @field_validator("timezone")
+    @classmethod
+    def _iana_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("must be an IANA timezone name") from exc
+        return value
+
+
+class LinkedResponse(BaseModel):
+    """``200`` for an authenticated existing user: linked to the trainer, no new account."""
+
+    user: SessionUser
+    linked_trainer_id: UUID

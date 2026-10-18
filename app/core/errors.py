@@ -66,6 +66,20 @@ class ConflictError(DomainError):
     message = "Conflict"
 
 
+class EmailTakenError(ConflictError):
+    """``uq_users_email`` violated; callers may translate it into a flow-specific conflict."""
+
+    code = "EMAIL_TAKEN"
+    message = "Email taken"
+
+
+class CoachAlreadyAssignedError(ConflictError):
+    """``uq_coach_one_active_trainer`` violated; the coach already has an active tenure."""
+
+    code = "COACH_ALREADY_ASSIGNED"
+    message = "Coach already assigned"
+
+
 class UnprocessableError(DomainError):
     status = 422
     code = "VALIDATION_ERROR"
@@ -79,9 +93,9 @@ class RateLimitedError(DomainError):
 
 
 _CONSTRAINTS: dict[str, tuple[type[DomainError], str]] = {
-    "uq_users_email": (ConflictError, "EMAIL_TAKEN"),
+    "uq_users_email": (EmailTakenError, "EMAIL_TAKEN"),
     "uq_trainer_profiles_slug": (ConflictError, "SLUG_TAKEN"),
-    "uq_coach_one_active_trainer": (ConflictError, "COACH_ALREADY_ASSIGNED"),
+    "uq_coach_one_active_trainer": (CoachAlreadyAssignedError, "COACH_ALREADY_ASSIGNED"),
     "ex_availability_no_overlap": (UnprocessableError, "OVERLAPPING_WINDOWS"),
 }
 
