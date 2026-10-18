@@ -1,3 +1,160 @@
+# Code Review — TASK-001 Phase B (Tasks 9-10: models, migration `0002_identity`, repositories)
+
+Scope: commits `9289861` (asyncpg constraint name), `c4562ed` (rate limiter fail-open), `41c50e2`
+(Task 9: models, migration, factories, drift test) and the **uncommitted** Task 10 working tree
+(`app/repositories/`, `tests/repositories/`). Reviewed against the plan (Tasks 9-10), architecture
+§2-§3, requirements "Models" / "Repositories" tables, and GOLDEN-PRINCIPLES.md.
+
+## Summary
+
+Phase B is in good shape. The schema matches architecture §3 (constraint names, partial indexes,
+GiST `EXCLUDE`, RESTRICT FKs, native enums). Model/migration drift is guarded by a test. All three
+Phase A carry-overs are done (`target_metadata`, `nulls_not_distinct`, rate-limiter fail-open), and
+so is the asyncpg `constraint_name` fix. The repositories follow the tenancy contract, and the
+OTT/refresh/approval semantics are correct and well tested. The gate is green: 116 tests and 95% coverage.
+
+There are no Critical issues. There are **3 Major** issues. Two are performance bugs that I
+confirmed with `EXPLAIN`: the hot-path coach lookups and the admin directory search never use the
+indexes built for them. The third is an untested repository. There are **10 Minor** issues.
+
+## Issues Found
+
+### Critical (Must Fix)
+
+- None.
+
+### Major (Should Fix)
+
+- [ ] **[Major] `is_active.is_(True)` bypasses both partial indexes on `coach_profiles`** —
+  `app/repositories/coach_profile.py:26,35,43,55`.
+  SQLAlchemy renders `is_active IS true`. Postgres cannot prove that this implies the index predicate
+  `WHERE is_active`, so `uq_coach_one_active_trainer` and `ix_coach_trainer_active` are never used.
+  Verified with `SET enable_seqscan=off`: the query falls back to `Seq Scan on coach_profiles` (cost 1e10).
+  With a bare `AND is_active` it uses `Index Scan using uq_coach_one_active_trainer`. `get_active_for_user`
+  resolves the tenant for coach principals, and downstream epics validate coaches with `get_active`.
+  Both sit on the per-request auth path (architecture §2: one indexed round trip, `GET /me` p95 < 100 ms),
+  and the cost grows with the history of tenure rows.
+  **Fix:** use the bare boolean column, e.g. `.where(CoachProfile.user_id == user_id, CoachProfile.is_active)`,
+  in all four places. Do the same in the Task 11 revalidation query (`cp.is_active`, not `IS TRUE`).
+  Add a regression test that runs `EXPLAIN` with `enable_seqscan=off` and asserts the index name is in the plan.
+
+- [ ] **[Major] The admin directory `query` filter cannot use either trigram index (G-25)** —
+  `app/repositories/user.py:61-64`.
+  There are two problems:
+  1. `User.email.ilike(...)` on a `CITEXT` column resolves to citext's own `~~*` operator, so it does
+     not match `ix_users_email_trgm`, which uses the text opclass `gin_trgm_ops`. Verified:
+     `email ILIKE '%abc%'` gives a Seq Scan, while `email::text ILIKE '%abc%'` gives `Bitmap Index Scan on ix_users_email_trgm`.
+  2. Even after that fix, `OR` across two joined tables (`users.email … OR profiles.name …`) cannot
+     become a BitmapOr, so the planner still filters the whole join.
+
+  The name expression on its own does match `ix_profiles_full_name_trgm` (verified).
+  **Fix:** `cast(User.email, Text).ilike(pattern, escape="\\")`, and resolve the match set as a union of
+  two indexable subqueries:
+  `User.id.in_(union(select(User.id).where(email_text.ilike(p)), select(Profile.user_id).where(full_name.ilike(p))))`.
+  Cover it with an `EXPLAIN` test like the one above.
+
+- [ ] **[Major] `ShareLinkEventRepository` has no tests (0% coverage)** — `app/repositories/share_link_event.py`.
+  It is in the requirements "Repositories" table and needed by the share-link flow (Task 21), but no test
+  exercises it. This fails the DoD Standard item "new code has test coverage (at least happy path)".
+  **Fix:** add `tests/repositories/test_share_link_event.py`. It should test that `append` persists `opened` and
+  `registered`, and that an unknown `kind` raises `IntegrityError` on `ck_share_link_events_kind`.
+
+### Minor (Consider)
+
+- [ ] **[Minor] Task 10 is not committed** — `git status`: `?? app/repositories/`, `?? tests/repositories/`.
+  This fails the DoD Minimum item. Commit it per plan Step 5 (`feat(repositories): …`) once the fixes above land.
+- [ ] **[Minor] `ImpersonationSession.jti` is `String(64)`, but `Principal.jti` is `UUID`** (architecture §2) —
+  `app/models/identity.py:327`, `app/repositories/impersonation.py:19,34,40`. The Task 11 revalidation join
+  `s.jti = <token jti>` will pass a `UUID` to a varchar column, which asyncpg rejects ("expected str").
+  The alternative is `str()` calls scattered across the code. **Fix:** make the column `Uuid` (model and
+  migration) and type the repository parameters as `UUID`, before any data exists.
+- [ ] **[Minor] 10 new `# type: ignore[attr-defined]` on `result.rowcount`** — `user.py:82`, `coach_profile.py:59`,
+  `trainer_player_link.py:90`, `share_link.py:77,89`, `impersonation.py:47`, `refresh_token.py:75,79`,
+  `one_time_token.py:80`, `idempotency.py:69`. The Phase A review recorded zero ignores in the codebase, and
+  GOLDEN-PRINCIPLES says to fix the type. **Fix:** add one helper, e.g. in `app/db/session.py`:
+  `def rowcount(r: Result[Any]) -> int: return cast("CursorResult[Any]", r).rowcount`.
+- [ ] **[Minor] The directory query inner-joins `profiles`** — `app/repositories/user.py:49`. No DB constraint
+  guarantees a 1:1 profile, so a user without one (for example a seeded super_admin) silently disappears
+  from the admin directory. **Fix:** use `outerjoin`, or make profile creation part of the user-creation
+  invariant and assert it in a test.
+- [ ] **[Minor] `OneTimeTokenRepository` accepts `OttPurpose | str`** — `app/repositories/one_time_token.py:28,34,59,67`.
+  `OttPurpose("bogus")` raises a bare `ValueError` (a 500), and the union is primitive obsession.
+  **Fix:** accept only `OttPurpose`. Callers are internal services.
+- [ ] **[Minor] `ShareLinkEvent.kind` is a free `str` plus a CHECK**, while every other categorical column is a
+  native enum (architecture §3: "native Postgres enums") — `app/models/identity.py:266`,
+  `app/repositories/share_link_event.py:16`. At least type it as a `StrEnum` or `Literal["opened", "registered"]`
+  on the Python side. The same applies to `AvailabilityWindow.subject_type` (`:286`).
+- [ ] **[Minor] `_tstz()` and `_fk()` return bare `Any`** — `app/models/identity.py:85,89`. Return `DateTime` and
+  `ForeignKey` (GOLDEN-PRINCIPLES: no bare `Any`).
+- [ ] **[Minor] Relationships use the default lazy loading under `AsyncSession`** — `app/models/identity.py:117,139,179`.
+  If `user.profile` or `coach.user` is touched outside an eager load, it fails with `MissingGreenlet`, far
+  from the cause. **Fix:** `lazy="raise"` so a missing `selectinload`/`contains_eager` fails clearly.
+- [ ] **[Minor] The drift test does not compare server defaults** — `tests/db/test_metadata_matches_migrations.py:188`.
+  Only `compare_type` is on, so default drift goes undetected (for example, `certifications` is `"[]"` in the
+  migration and `'[]'::jsonb` on the model). **Fix:** add `compare_server_default=True`, normalising where
+  Alembic compares textually.
+- [ ] **[Minor] Test gaps** —
+  (a) `test_directory_keyset_pages_cover_all_rows_in_order` (`tests/repositories/test_user.py:24`) creates every
+  row in one transaction. `now()` is therefore identical for all of them, so only the `id` tie-breaker is tested.
+  Add a case with explicit, distinct `created_at`.
+  (b) The `0002` downgrade is not covered (`0002_identity.py:381-399`, 0%). It passed when probed manually in
+  this review (`0001 → head → base → head`); add it next to `test_baseline_migration.py` as plan Task 9
+  Step 4 intended.
+  (c) The `add()` methods on the User, Profile, TrainerProfile, Coach and Player repositories are untested
+  because the factories bypass them.
+
+### Phase A carry-overs: status
+
+| Carry-over | Status |
+|---|---|
+| `target_metadata` = `Base.metadata` with all models, plus `platform.py` mirroring `0001` (`metadata_` mapping) | Done. `test_models_match_migrations` passes (no diff) |
+| `FeatureFlag` `postgresql_nulls_not_distinct=True` | Done (`app/models/platform.py:64-69`) |
+| Rate limiter fail-open on Redis outage, warning without key/PII | Done, with tests for the outage path and that the real limit still raises |
+| Naive-datetime cursor rejected, `CursorQ max_length=256` | Done (`app/core/pagination.py:19,30`) |
+
+### Positive Notes
+
+- The schema follows architecture §3 exactly: `ck_coach_left_iff_inactive`, a partial unique index as the
+  coach-move concurrency guard, the GiST `EXCLUDE` with `'[)'` (touching windows allowed and tested),
+  per-kind share-link CHECKs, a brand-hex CHECK, `CITEXT` emails, and RESTRICT on every FK. Constraint names
+  are explicit and stable, which keeps `map_integrity_error` reliable.
+- `constraint_name()` handles both drivers, and a real-DB test (`test_real_asyncpg_error_maps_to_domain_error`)
+  proves the mapping, closing a bug where no real error ever matched.
+- The OTT repository matches §3.2 to the letter. Issuing supersedes open tokens. Consumption is one atomic
+  `UPDATE … RETURNING`, with purpose always in the predicate and one `None` for unknown, expired or used
+  (no oracle).
+- Tenancy is enforced structurally. Tenant-scoped methods take a required keyword-only `trainer_id`, and a
+  signature meta-test with an explicit, commented exception list (`lock_by_code`, `lock_by_id_for_parent`,
+  `expire_due`) keeps it that way. `increment_use` is also tenant-scoped, which is stricter than the plan.
+- Concurrency primitives are correct: `FOR UPDATE` plus `populate_existing` on lock methods (with a test that
+  captures the SQL), `ON CONFLICT DO UPDATE … RETURNING` for an idempotent link upsert, and
+  `ON CONFLICT DO NOTHING` for idempotency-key reservation.
+- The `LIKE` metacharacters in the directory query are escaped, and a test (`query="%%"` returns nothing)
+  proves it.
+- Repositories never commit. All time comes from an injected `now`, never `datetime.now()`.
+
+## Verification Evidence (DoD Standard tier, run in this review)
+
+`uv run` still fails here (`pyenv: version '3.12' is not installed`), so the gate was run with the project
+venv binaries (Python 3.12.13):
+
+| Check | Command | Result |
+|---|---|---|
+| Lint | `.venv/bin/ruff check .` | All checks passed |
+| Format | `.venv/bin/ruff format --check .` | 72 files already formatted |
+| Types | `.venv/bin/mypy app tests` | Success: no issues found in 72 source files |
+| Tests | `.venv/bin/pytest -q --cov=app` | **116 passed**, 3 warnings (testcontainers deprecation, third-party) |
+| Coverage | `--cov-report=term-missing` | 95% total; `share_link_event.py` 0%, `profile.py` 76%, `0002` downgrade uncovered |
+| Migration round-trip | throwaway probe: `downgrade 0001 → upgrade head → downgrade base → upgrade head` | passes |
+| Query plans | throwaway probe: `EXPLAIN` with `enable_seqscan=off` on the testcontainer DB | see Major #1 and #2 |
+| TODO/FIXME | `grep -rn "TODO\|FIXME\|HACK" app tests` | none |
+| File naming | `tasks/TASK-001/*` | all skill-prefixed |
+| Uncommitted | `git status` | **FAIL**: Task 10 untracked (Minor #1) |
+
+The probes lived in the session scratchpad. Nothing was added to the repository.
+
+---
+
 # Code Review — TASK-001 Phase A, re-review of the Major fixes
 
 Scope: the fixes for the 4 Major findings from the first Phase A review (kept below for history).
