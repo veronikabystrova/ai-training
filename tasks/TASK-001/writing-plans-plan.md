@@ -861,8 +861,14 @@ def test_non_svg_root_rejected() -> None:
 
 Spec: requirements "Models" table and architecture §3.
 
+**Carry-over from Phase A review (do these in this task):**
+1. **`target_metadata`:** point `app/db/alembic/env.py` at `Base.metadata` with all models imported, so autogenerate does not propose dropping the baseline tables. This needs ORM models for the `0001_baseline` tables too: create `app/models/platform.py` with `IdempotencyKey`, `AuditLog` (map the `metadata` column to attribute `metadata_`; `metadata` is reserved on declarative models) and `FeatureFlag`, mirroring `0001_baseline` exactly. Test: `alembic check` (or `compare_metadata`) reports no diff after `upgrade head`.
+2. **`nulls_not_distinct`:** the `FeatureFlag` model's `UniqueConstraint("key", "trainer_id")` needs `postgresql_nulls_not_distinct=True` to match `0001_baseline` (otherwise autogenerate diffs it away).
+3. **Rate limiter fail-open** (architecture `rate_limit` row): in `RateLimiter.hit`, catch Redis connection/timeout errors (`redis.exceptions.ConnectionError`, `TimeoutError`), log `rate_limit_unavailable` (warning, with route class, no key/PII) and return without raising. Test with a `RateLimiter` pointed at an unreachable Redis URL: `hit` returns, no exception, warning logged once. `RateLimitedError` on a real limit is unchanged.
+
 **Files:**
 - Create: `app/models/__init__.py`, `app/models/identity.py`, `app/db/alembic/versions/0002_identity.py`
+- Create (carry-over): `app/models/platform.py`; Modify (carry-over): `app/db/alembic/env.py`, `app/core/ratelimit.py`; Test: `tests/core/test_ratelimit.py`, `tests/db/test_metadata_matches_migrations.py`
 - Test: `tests/db/test_identity_constraints.py`, `tests/factories.py`
 
 **Step 1: Write the failing tests** (one per DB-level rule; use `make_user`, `make_trainer`, `make_coach`, `make_player` factories in `tests/factories.py`, each returning committed-in-session ORM rows)
@@ -1135,11 +1141,27 @@ async def test_impersonated_request_sets_header_and_writes_audit(client, imperso
 
 async def test_normal_request_has_no_impersonation_header(client, trainer_token) -> None:
     assert "X-Impersonated-By" not in (await client.get("/api/v1/me", headers=bearer(trainer_token))).headers
+
+async def test_unhandled_error_logged_once_with_correlation_id(settings) -> None:
+    app = create_app(settings)
+
+    @app.get("/boom")
+    async def boom() -> None:
+        raise RuntimeError("boom")
+
+    # default ASGITransport re-raises app exceptions: the test errors if the exception escapes the middleware
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        with structlog.testing.capture_logs() as logs:
+            r = await c.get("/boom", headers={"X-Correlation-Id": "abc"})
+    assert r.status_code == 500
+    assert r.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert r.headers["X-Correlation-Id"] == "abc"
+    assert [e["event"] for e in logs].count("unhandled_exception") == 1
 ```
 
 **Step 2:** Run: `uv run pytest tests/api/test_middleware.py` Expected: FAIL (routes absent)
 
-**Step 3: Implementation.** `create_app(settings)` in `main.py` registers `install_error_handlers`, middleware, routers `auth, me, trainer, public, admin` under `/api/v1`, `/healthz`, structlog config with a redaction processor that drops keys matching `password|token|authorization|secret`. Middleware order: correlation id outermost; impersonation hook reads `request.state.principal` after the route resolves and writes `AuditService.record(action="impersonated_request", method=..., path=...)`.
+**Step 3: Implementation.** `create_app(settings)` in `main.py` registers `install_error_handlers`, middleware, routers `auth, me, trainer, public, admin` under `/api/v1`, `/healthz`, structlog config with a redaction processor that drops keys matching `password|token|authorization|secret`. Middleware order: correlation id outermost. The correlation-id middleware wraps `call_next` in `try/except Exception`: on an unhandled exception it logs `unhandled_exception` once through structlog (redacted) and returns the `500 INTERNAL_ERROR` envelope with `X-Correlation-Id` set. It must not re-raise, so Starlette's `ServerErrorMiddleware` and uvicorn never see the exception (otherwise the traceback is logged a second time, unredacted, and the 500 has no correlation id). Remove the catch-all `Exception` handler from `install_error_handlers` (keep `_internal_error()` for the unmapped `IntegrityError` path) so there is a single 500 path; update `tests/core/test_errors.py` accordingly. Impersonation hook reads `request.state.principal` after the route resolves and writes `AuditService.record(action="impersonated_request", method=..., path=...)`.
 
 **Step 4:** Run: the test file, then QG. Expected: PASS (the `/me` impersonation test passes after Task 17; mark it `xfail(strict=True)` until then, and remove the marker in Task 17).
 
@@ -1770,11 +1792,12 @@ def test_error_envelope_documented_for_4xx(app) -> None: ...
 - JWT `kid` rotation, production SMTP/SES adapter (ship the logging adapter only), Redis principal cache.
 - Real implementations of `CommitmentChecker`, `PurchaseExecutor`, `CampSubmissionReader` (Epics 02/05; fakes only).
 
-## Open points the implementer must raise, not decide
+## Open points
 
-1. Dependent age bound 1-18 inclusive versus spec §10 "< 18" (design Open Question 3).
-2. `legal_retention_until` default of 7 years needs legal sign-off.
-3. Spec doc assumptions 1-5 at the bottom of `specs/api-designer-spec.md` are unconfirmed; if the spec owner changes one, update the matching test first.
+All design decisions are resolved: see `specs/api-designer-spec.md` → "Resolved decisions"
+(confirmed by user 2026-10-18). Notably dependent age is `1 <= age < 18`.
+
+Outside sign-off only (not blocking): the default `erasure_retention_years = 7` needs legal sign-off.
 
 ## Milestones
 

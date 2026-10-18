@@ -90,7 +90,9 @@ class Certification(BaseModel):
 ```
 
 Shared error codes (any endpoint): 401 `INVALID_TOKEN`, 401 `IMPERSONATION_EXPIRED`, 403 `FORBIDDEN`,
-404 `NOT_FOUND`, 422 `VALIDATION_ERROR`, 429 `RATE_LIMITED`.
+404 `NOT_FOUND`, 405 `METHOD_NOT_ALLOWED` (keeps the `Allow` header), 422 `VALIDATION_ERROR`,
+429 `RATE_LIMITED`, 500 `INTERNAL_ERROR`. Any other framework-raised status returns `HTTP_{status}`
+(e.g. `HTTP_415`).
 
 ---
 

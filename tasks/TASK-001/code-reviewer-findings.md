@@ -1,0 +1,250 @@
+# Code Review — TASK-001 Phase A, re-review of the Major fixes
+
+Scope: the fixes for the 4 Major findings from the first Phase A review (kept below for history).
+Files: `app/core/errors.py`, `app/core/config.py`, `app/core/svg.py`,
+`app/db/alembic/versions/0001_baseline.py`, plus `tests/core/test_errors.py`, `tests/core/test_svg.py`,
+`tests/core/test_ids_clock_config.py` and `tests/db/test_baseline_migration.py`.
+
+## Summary
+
+All 4 Major findings are fixed and each one has a regression test that fails without its fix. No
+new Critical or Major issues. There are 5 new Minor items. Most are follow-ups that later tasks
+need to know about: the new error codes are not in the spec's catalog, a framework-raised 401 gets a
+different code from the spec's, the 500 traceback is logged twice, the depth limit has no boundary
+test, and the ORM model must repeat the NULLS NOT DISTINCT setting. Lint, format, mypy and all
+43 tests pass. The work is still uncommitted.
+
+## Status of the previous Major findings
+
+| # | Finding | Status | Evidence |
+|---|---|---|---|
+| 1 | Error envelope gaps (404/405/500) | **Fixed** | `errors.py:132-148`: a `StarletteHTTPException` handler (keeps `exc.headers`, so `Allow` survives on 405) and a catch-all `Exception` handler. Unmapped `IntegrityError` now logs and returns the 500 envelope (`:119-121`) instead of re-raising. Tests: `test_unknown_route_and_wrong_method_use_envelope`, `test_unhandled_errors_return_500_envelope[/boom,/integrity]` |
+| 2 | `feature_flags` allows duplicate global flags | **Fixed** | `0001_baseline.py:68-73` `postgresql_nulls_not_distinct=True` (SQLAlchemy 2.1.5, PG 16). Test `test_feature_flags_global_key_is_unique` inserts a second `(x, NULL)` row inside a SAVEPOINT and expects `IntegrityError` |
+| 3 | Secrets not protected | **Fixed** | `config.py:16` `jwt_secret: SecretStr = Field(min_length=32)`; `:25` `hash_salt: SecretStr = Field(min_length=16)`, required, with no default. Test checks that a short secret and a missing salt are rejected, and that the secret is not in `repr`. No production code reads these yet, so `.get_secret_value()` is only needed once `TokenIssuer` is wired up from `Settings` |
+| 4 | Deep SVG causes `RecursionError` | **Fixed** | `svg.py:21,43-45,58` `MAX_DEPTH = 32` is checked before the element filter, so dropped subtrees still count toward the depth. Test: 5,000 nested `<g>` → `422 INVALID_LOGO` |
+
+## Issues Found
+
+### Critical (Must Fix)
+- None.
+
+### Major (Should Fix)
+- None.
+
+### Minor (Consider)
+
+- [ ] **[Minor] The new error codes are not in the spec's catalog** — `app/core/errors.py:92-106,134`.
+  `specs/api-designer-spec.md:92-93` lists the shared codes as `INVALID_TOKEN, IMPERSONATION_EXPIRED,
+  FORBIDDEN, NOT_FOUND, VALIDATION_ERROR, RATE_LIMITED`. The fix adds `METHOD_NOT_ALLOWED`,
+  `INTERNAL_ERROR`, `UNAUTHORIZED`, `PAYLOAD_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`, `BAD_REQUEST`,
+  `CONFLICT` and a dynamic `HTTP_{status}` fallback. The previous review asked for this, so this is a
+  gap between the code and the spec, not a coder error. Either way, clients will see codes the
+  contract does not list.
+  **Fix:** with the user's approval, add `METHOD_NOT_ALLOWED` (405) and `INTERNAL_ERROR` (500) to the
+  spec's shared codes. Otherwise, trim `_HTTP_CODES` to the codes that framework errors can actually
+  produce.
+
+- [ ] **[Minor] A framework-raised 401 gets code `UNAUTHORIZED`, but the spec says `INVALID_TOKEN`** —
+  `app/core/errors.py:94`. If the auth dependency (Task for `PrincipalDep`) uses FastAPI's
+  `HTTPBearer(auto_error=True)`, a missing header raises `HTTPException(401)`. That error goes through
+  `_http` and returns `UNAUTHORIZED`. The plan expects anonymous → 401 (`writing-plans-plan.md:1067`),
+  and the spec allows only `INVALID_TOKEN` for 401.
+  **Fix:** map `401: "INVALID_TOKEN"` in `_HTTP_CODES`, or require the auth dependency to raise
+  `UnauthorizedError` itself (`auto_error=False`).
+
+- [ ] **[Minor] Unhandled exceptions are logged twice** — `app/core/errors.py:145-148`. A handler
+  registered for `Exception` runs inside Starlette's `ServerErrorMiddleware`. That middleware sends
+  the 500 response and then re-raises (`starlette/middleware/errors.py:186`). Uvicorn then logs the
+  same traceback again, outside structlog and its planned redaction processor. This is also why the
+  test needs `raise_app_exceptions=False`. In addition, this 500 response is built outside every
+  user middleware, so it will not get the correlation-id header that the Task with `main.py` adds.
+  **Fix:** accept this and note it in the architecture spec. Or catch `Exception` in the outermost
+  correlation-id middleware so the response carries the id and the error is logged once.
+
+- [ ] **[Minor] No boundary test for `MAX_DEPTH`** — `tests/core/test_svg.py:62-67`. Only depth 5,000
+  is tested. An off-by-one (`>` vs `>=`) or a later lowering of the limit would go unnoticed.
+  **Fix:** parametrise the test with `MAX_DEPTH` (accepted) and `MAX_DEPTH + 1` (rejected), counting
+  nesting levels from the root `<svg>`.
+
+- [ ] **[Minor] The ORM model must repeat `nulls_not_distinct`** — `app/db/alembic/versions/0001_baseline.py:68-73`.
+  When `FeatureFlag` is mapped (architecture: `db/models/admin.py`), `__table_args__` needs the same
+  `UniqueConstraint(..., postgresql_nulls_not_distinct=True)`. Without it, autogenerate will report
+  drift, and `on_conflict_do_update` will not target the right constraint.
+  Also, line 122 of `errors.py` (a mapped `IntegrityError` going through the HTTP handler) and lines
+  137-138 (a non-standard status) have no tests. Add a route that raises an `IntegrityError` whose
+  `diag.constraint_name="uq_users_email"` and assert `409 EMAIL_TAKEN`.
+
+### Carried over from the first review (not in scope for this fix, still open)
+- Nothing committed yet. The diff in `writing-plans-plan.md` is still mixed in with the code.
+- Dependency floors, naive cursor datetimes, `register_namespace` per call (`svg.py:73`), `ttl or`,
+  rate limiter `aclose`, empty `target_metadata`, conftest hygiene, untested adapters, CI hardening.
+
+### Positive Notes
+- Each fix stays small and in its own file. `_internal_error()` builds the 500 envelope in one
+  place, and the mapped and unmapped integrity paths share it.
+- The `_http` handler keeps `exc.headers`, so 405 `Allow` (and a future 401 `WWW-Authenticate`) is
+  not lost. The test asserts this.
+- The depth check runs before the allowlist filter, so depth is bounded for the whole tree. Because
+  it raises the domain error, uploads get a 422 and not a 500.
+- `hash_salt` has no default, so a missing salt stops startup instead of silently using a public
+  value. This is safer than a validator that rejects only `"change-me"`.
+- The migration test uses `begin_nested()`, so the expected failure does not break the
+  per-test SAVEPOINT fixture.
+
+## Verification Evidence (DoD Standard tier, run in this review)
+
+Run with the project venv binaries (`uv run` is still blocked by the pyenv shim), Python 3.12.13:
+
+| Check | Command | Result |
+|---|---|---|
+| Lint | `.venv/bin/ruff check .` | All checks passed |
+| Format | `.venv/bin/ruff format --check .` | 33 files already formatted |
+| Types | `.venv/bin/mypy app tests` | Success: no issues found in 33 source files |
+| Tests | `.venv/bin/pytest -q --cov=app` | **43 passed** (was 37), 3 third-party deprecation warnings |
+| Coverage | same | 87% total; `errors.py` 96% (misses 122, 137-138), `svg.py` 98%, `config.py` 96% |
+| File naming | `tasks/TASK-001/*` | all skill-prefixed |
+| Uncommitted | `git status` | **FAIL**: Phase A is still untracked |
+
+Library versions checked: SQLAlchemy 2.1.5, Starlette 1.8.0, FastAPI 0.144.0.
+
+---
+
+# Previous review — TASK-001 Phase A (Tasks 1-8), first pass
+
+Scope: uv scaffold, `app/core/*`, `app/db/*` (base, session, Alembic env + `0001_baseline`),
+`tests/` (conftest, fakes, core + db tests), `.github/workflows/ci.yml`, `pyproject.toml`.
+Reviewed against `tasks/TASK-001/writing-plans-plan.md` Phase A, `specs/architect-architecture.md`,
+`specs/api-designer-spec.md` Conventions, `.claude/DOD.md` (Standard), `.claude/GOLDEN-PRINCIPLES.md`.
+
+## Summary
+
+Phase A follows the plan closely, and in several places the implementation improves on the plan's own
+snippets. Examples: `decode()` checks `exp` against the injected clock, the semaphore is per instance
+instead of module-global, `Settings` uses `default_factory` and has no `# type: ignore`, the test
+fixtures use NullPool, and the SVG tests add more hostile payloads. Layering is clean: `core/` has no
+upward imports, and every third-party library (argon2, jwt, limits, boto3, zxcvbn, defusedxml) sits
+behind `core/`.
+
+No Critical issues. There are 4 Major issues: the error envelope has gaps, the `feature_flags`
+uniqueness rule does not hold for NULL `trainer_id`, secrets in config are not protected, and deeply
+nested SVG input crashes the sanitiser. There are 10 Minor issues. The work is also still
+**uncommitted**, while the plan expects one commit per task.
+
+## Issues Found
+
+### Critical (Must Fix)
+- None.
+
+### Major (Should Fix)
+
+- [ ] **[Major] Some errors do not use the error envelope** — `app/core/errors.py:89-109`.
+  Spec Conventions: "Error envelope ... one handler in `core/errors.py`". Confirmed by running the code:
+  `GET /missing` → `404 {"detail":"Not Found"}`, wrong method → `405 {"detail":"Method Not Allowed"}`,
+  and an unmapped `IntegrityError` (`raise exc` on line 100) → `500` plain-text `Internal Server Error`.
+  Clients will get two different error formats, and the Task 28 test `test_error_envelope_documented_for_4xx`
+  will fail once real routes exist.
+  **Fix:** in `install_error_handlers`, also register `starlette.exceptions.HTTPException` (map
+  404→`NOT_FOUND`, 405→`METHOD_NOT_ALLOWED`, and so on, keeping `exc.headers`) and a catch-all
+  `Exception` handler that logs the error and returns `500 {"error":{"code":"INTERNAL_ERROR",...}}`.
+  The `_integrity` fallback should return that 500 envelope instead of re-raising.
+
+- [ ] **[Major] `uq_feature_flags_key_trainer_id` does not stop duplicate global flags** —
+  `app/db/alembic/versions/0001_baseline.py:68`. In Postgres, NULLs count as distinct in a UNIQUE
+  constraint, so you can insert any number of `(key='x', trainer_id=NULL)` rows. A lookup of the global
+  flag can then get more than one row and return an unpredictable result.
+  **Fix (PG ≥ 15, we run 16):** `sa.UniqueConstraint("key", "trainer_id", name=..., postgresql_nulls_not_distinct=True)`,
+  plus a migration test that a second global insert raises `IntegrityError`.
+
+- [ ] **[Major] Secret settings have no protection or validation** — `app/core/config.py:16,25`.
+  (a) `jwt_secret: str` accepts any length. A 1-char secret was accepted, so HS256 can run with a
+  brute-forceable key. (b) `repr(Settings(...))` prints `jwt_secret='k'` in plain text, so any
+  `log.info(settings=...)` or traceback leaks it. (c) `hash_salt = "change-me"` is a working default,
+  so a production deploy that forgets `APP_HASH_SALT` silently hashes IP and user-agent values with a
+  public salt (a privacy issue).
+  **Fix:** `jwt_secret: SecretStr = Field(min_length=32)` and pass `.get_secret_value()` into
+  `TokenIssuer`. Make `hash_salt: SecretStr` required (no default), or add a validator that rejects
+  `"change-me"`. Add a test that a short secret raises `ValidationError`.
+
+- [ ] **[Major] Deeply nested SVG crashes the sanitiser with `RecursionError` (returns 500)** — `app/core/svg.py:42-56`.
+  Confirmed by running it: 5,000 nested `<g>` elements (about 40 KB, well under any upload limit) parse
+  fine with expat, then `_copy` recurses until `RecursionError`. The client gets a 500 instead of
+  `422 INVALID_LOGO`, and the error can be triggered on demand on an upload endpoint.
+  **Fix:** add a depth guard to `_copy` (for example `MAX_DEPTH = 32`, raising `_invalid("Logo is too deeply nested")`),
+  or rewrite the walk iteratively with an explicit stack. Add a parametrised test for it.
+
+### Minor (Consider)
+
+- [ ] **[Minor] Nothing is committed yet** — Phase A is all untracked files, and
+  `writing-plans-plan.md` has an unrelated edit to "Open points". The plan's ground rule 1 and the
+  DoD Minimum ("no uncommitted changes") expect one commit per task. **Fix:** commit before moving on
+  to Phase B. Put the plan-doc edit in its own `docs(TASK-001)` commit.
+- [ ] **[Minor] Dependency floors are lower than the architecture requires** — `pyproject.toml`:
+  `pyjwt>=2.10`, `limits>=5.0` and `uuid-utils>=0.10`, but the architecture table says `pyjwt>=2.15` and
+  `limits>=5.8`, and the plan says `uuid-utils>=1.0`. The lock file resolves to 2.15.1, 5.8.0 and 1.0.0,
+  so this is safe today but could break if someone re-resolves. **Fix:** raise the floors to match the
+  spec.
+- [ ] **[Minor] `decode_cursor` accepts naive datetimes and has no length limit** — `app/core/pagination.py:27-32`, `:19`.
+  A crafted cursor `["2026-01-01T00:00:00", ...]` decodes to a naive datetime. Comparing it with a
+  `timestamptz` keyset in asyncpg can raise `DataError` and return a 500. `CursorQ` has no `max_length`.
+  **Fix:** reject the cursor if `ts.tzinfo is None`, and use `Query(max_length=256)`.
+- [ ] **[Minor] `ET.register_namespace` changes global state on every call** — `app/core/svg.py:70`.
+  Move it to module import time.
+- [ ] **[Minor] `ttl or self._ttl` ignores `ttl=0`** — `app/core/security.py:92`. Use
+  `self._ttl if ttl is None else ttl` so an explicit 0 (or negative, in tests) is respected.
+- [ ] **[Minor] The rate limiter leaks connections and has no Redis-outage policy** — `app/core/ratelimit.py:21-32`.
+  There is no `aclose()`, so each test creates a new `RedisStorage` and never closes it. A Redis outage
+  surfaces as a raw 500. **Fix:** add an `aclose()` and call it from the fixture and app lifespan.
+  Decide on fail-open or fail-closed and record that in the architecture spec, which is not settled
+  here.
+- [ ] **[Minor] `target_metadata` is empty** — `app/db/alembic/env.py:9,12`. The baseline tables have
+  no ORM models yet, so `alembic revision --autogenerate` would generate DROPs for
+  `idempotency_keys`, `audit_log` and `feature_flags`. **Fix (Task 9):** add a `app/db/models/__init__.py`
+  that imports every model, and import it in `env.py`. Note that `audit_log.metadata` collides with
+  SQLAlchemy's reserved `metadata` attribute, so map it as `meta: Mapped[dict[str, object]] = mapped_column("metadata", JSONB)`.
+- [ ] **[Minor] Test fixture hygiene** — `tests/conftest.py:34`: `Config("alembic.ini")` depends on the
+  current directory, so use `Path(__file__).parents[1] / "alembic.ini"`. `tests/conftest.py:83`: the
+  `Redis(...)` client is never closed, so use `with Redis(...) as r: r.flushall()`.
+- [ ] **[Minor] Untested adapters** — `app/db/session.py` (0%), `app/core/email.py` (0%), and
+  `app/core/storage.py` `S3ObjectStorage` (50%) have no tests. At minimum, add a `get_session`
+  close test, a `LoggingEmailSender` test (it must not log `to` or the context, using `structlog.testing.capture_logs`),
+  and an `S3ObjectStorage.head` 404→`None` test with `botocore.stub.Stubber`.
+- [ ] **[Minor] CI hardening** — `.github/workflows/ci.yml`: add `permissions: contents: read`, and
+  consider pinning actions by SHA and turning on `enable-cache: true` in `setup-uv`.
+
+### Positive Notes
+
+- `TokenIssuer.decode` pins `algorithms=["HS256"]`, requires `sub/role/exp/jti/typ`, rejects
+  `alg=none` and non-`access` `typ`, and checks `exp` against the injected `Clock`. That makes the
+  time-boundary tests deterministic.
+- `PasswordHasher.verify(None, ...)` runs a dummy Argon2 verify, which prevents user enumeration by
+  timing. Hashing runs in worker threads behind a semaphore.
+- The SVG sanitiser uses an allowlist and rebuilds the tree from scratch (it does not strip a copy).
+  It drops namespaced and `on*` attributes, `javascript:` and `data:` values, and whole subtrees of
+  unknown elements, and `forbid_dtd=True` blocks XXE and entity bombs. The tests cover all of these.
+- `map_integrity_error` maps errors by constraint name, as ground rule 5 requires, and the naming
+  convention in `db/base.py` produces names that match the mapping table.
+- The test infrastructure is solid: testcontainers, migrate-once, SAVEPOINT rollback per test, a
+  separate truncating `committed_engine` for concurrency tests, Redis flushed per test, and fakes
+  that satisfy the Protocols.
+- `mypy --strict` passes with no `# type: ignore` in the codebase. The plan's own
+  `# type: ignore[call-arg]` was removed correctly.
+
+## Verification Evidence (DoD Standard tier, run in this review)
+
+`uv run` fails on this machine (`pyenv: version '3.12' is not installed`, because the pyenv shim
+captures `uv`), so the gate was run with the project venv binaries directly (Python 3.12.13):
+
+| Check | Command | Result |
+|---|---|---|
+| Lint | `.venv/bin/ruff check .` | All checks passed |
+| Format | `.venv/bin/ruff format --check .` | 33 files already formatted |
+| Types | `.venv/bin/mypy app tests` | Success: no issues found in 33 source files |
+| Tests | `.venv/bin/pytest -q` | **37 passed**, 3 warnings (testcontainers deprecation, third-party) |
+| Coverage | `pytest --cov=app` | 86% total; gaps: `db/session.py` 0%, `core/email.py` 0%, `core/storage.py` 50% |
+| TODO/FIXME | `grep -rn "TODO\|FIXME\|HACK" app tests` | none |
+| File naming | `tasks/TASK-001/*` | all skill-prefixed |
+| Uncommitted | `git status` | **FAIL**: all Phase A files untracked (see Minor #1) |
+
+Probes run during the review: SVG with 5,000 nested elements → `RecursionError`; naive-datetime cursor
+→ accepted; `Settings(jwt_secret="k")` → accepted and shown in `repr`; framework 404/405 and unmapped
+`IntegrityError` → responses without the envelope.

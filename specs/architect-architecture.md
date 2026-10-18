@@ -103,7 +103,7 @@ class TenantScope:
 | `player_context` | `PlayerContextDep` (reads `trainer_id: UUID = Query()`) | Requires an active `trainer_player_links` row for a profile the caller owns (child: only its own profile) and an active trainer. Builds `player_profile_ids` | 404 `NOT_FOUND` (never 403: no tenant oracle) |
 | `SuperAdminScope` | `Annotated[Principal, Depends(require_super_admin)]` | Explicit, grep-able bypass marker. Rejects `act is not None` (impersonating admins cannot reach `/admin/*`, US-01.07) | 403 |
 | `idempotency` | `IdempotencyDep` | Reads `Idempotency-Key`, scoped by `principal.user_id`; replays stored response; different hash ⇒ 409 | 409 `IDEMPOTENCY_KEY_REUSED` |
-| `rate_limit(route_class)` | `Depends(rate_limit(RouteClass.login))` | Keyed per route class by IP / email / principal (limits in brainstorm design) | 429 + `Retry-After` |
+| `rate_limit(route_class)` | `Depends(rate_limit(RouteClass.login))` | Keyed per route class by IP / email / principal (limits in brainstorm design). **Redis outage: fail-open** on every route class (user decision 2026-10-18): the request proceeds unthrottled and a `rate_limit_unavailable` warning is logged | 429 + `Retry-After` |
 
 **`current_principal` revalidation query** (single statement, indexed lookups only, keeps `GET /me` p95 < 100 ms):
 
