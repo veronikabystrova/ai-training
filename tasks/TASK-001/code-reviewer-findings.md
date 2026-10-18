@@ -1,3 +1,120 @@
+# Code Review — TASK-001 Phase C (Tasks 11-12: `api/deps.py`, middleware, app factory)
+
+Scope: commit `a7fe73e` (Tasks 11-12), plus `cbe8a28` (gender enum) and `3b18314` (plan sync).
+Reviewed against plan Phase C, architecture §2 / §5 / §6, `specs/api-designer-spec.md` (Conventions:
+Idempotency) and the Phase B query rules.
+
+## Summary
+
+Phase C follows architecture §2 closely and is well built. Every dependency in the table exists
+with the specified signature and failure codes. `_resolve` is one indexed statement that uses the
+bare `cp.is_active` and binds `jti` as a UUID, and a test guards both rules
+(`test_principal_resolution_is_one_select_without_is_true`). Cross-tenant and player-context misses
+are 404, never 403. `SuperAdminScope` rejects `act`. There is now a single 500 path that logs once
+with the correlation id. The idempotency claim moved into the service transaction (`IdempotencyGuard`),
+which is the right choice for concurrency, and the docstring explains it. The gate is green.
+
+There are no Critical issues. There are **2 Major** issues, both in the logging and audit paths
+around the request. There are **6 Minor** issues.
+
+## Issues Found
+
+### Critical (Must Fix)
+
+- None.
+
+### Major (Should Fix)
+
+- [ ] **[Major] Unhandled DB errors log bound SQL parameters (emails, password/token hashes)** —
+  `app/db/session.py:18` (`create_engine`), surfaced by `app/api/middleware.py:39` and
+  `app/core/errors.py` (`unmapped_integrity_error`).
+  `str()` of any SQLAlchemy `StatementError` appends `[parameters: (...)]`. I confirmed this locally:
+  an `IntegrityError` on an `INSERT INTO users` prints the email and the argon2 hash. The new single
+  500 path logs `exc_info=True`, and `format_exc_info` runs *after* `redact_processor`. Key-name
+  redaction therefore never sees the traceback text, so the "logged once, redacted" guarantee
+  (Task 12, architecture §5 Privacy) does not hold for DB failures, which are the most common 500.
+  **Fix:** `create_async_engine(url, pool_pre_ping=True, hide_parameters=True)`, plus a test that
+  raises an `IntegrityError` with parameters through `/boom` and asserts they are absent from
+  `capture_logs()` output.
+
+- [ ] **[Major] Impersonation audit is not reliable for "every act-bearing request"** —
+  `app/api/middleware.py:53-72`.
+  1. If the route raises an unhandled exception, `call_next` re-raises (that is how
+     `BaseHTTPMiddleware` works). The audit block is skipped, so an impersonated request that
+     crashed, possibly after a partial write, leaves no `audit_log` row (NFR-006).
+  2. The audit row is written in a *separate* session after the handler has committed. The
+     docstring says "fail closed", but a failing audit insert turns an already-committed mutation
+     into a 500. The client then retries a write that succeeded, and nothing records who made the
+     first one.
+  **Fix:** wrap `call_next` in `try/finally` (or `except` + re-raise) so the audit row is written
+  on the exception path too, and correct the docstring to "fail visible, not atomic". Alternatively,
+  write the row inside the request transaction from `current_principal`/the service, and leave the
+  middleware to set only the header. Add a test with an impersonated probe route that raises.
+
+### Minor (Consider)
+
+- [ ] **[Minor] Coverage under-reports async DB code** — `pyproject.toml` (no `[tool.coverage.run]`).
+  `app/api/deps.py:204-238` (all of `_authenticate` after the query) and
+  `app/services/idempotency_service.py:50-58` (the replay path) show as uncovered, yet tests
+  exercise both (`test_coach_moved_tenant_token_is_stale`,
+  `test_idempotency_replays_stored_response_and_runs_once`). Coverage loses the trace after
+  SQLAlchemy's greenlet switch. The 96% figure is therefore unreliable in both directions.
+  **Fix:** `[tool.coverage.run] concurrency = ["greenlet", "thread"]`.
+
+- [ ] **[Minor] Duplicate `get_session`** — `app/db/session.py:25` vs `app/api/deps.py:75`.
+  The `db` version is now used only by `tests/db/test_session.py`.
+  **Fix:** delete it (and its test), or have `deps.get_session` delegate to it.
+
+- [ ] **[Minor] IP rate limit keys on `request.client.host` with no proxy story** —
+  `app/api/deps.py:381`. Behind a load balancer every client shares one bucket (login 10/min
+  becomes global), and the `"unknown"` fallback is also a shared bucket. Nothing in `specs/` or the
+  plan defines the deployment.
+  **Fix:** record the decision. Either run uvicorn with `--proxy-headers --forwarded-allow-ips=<LB>`,
+  or add a trusted-proxy setting. Raise it as an open question rather than adding config unasked.
+
+- [ ] **[Minor] Correlation-id regex accepts a trailing newline** — `app/api/middleware.py:17,33`.
+  `$` matches before a final `\n`. The HTTP parser rejects such header values today, so this is
+  defence in depth only. **Fix:** `_VALID_CORRELATION_ID.fullmatch(supplied)` and drop `^`/`$`.
+
+- [ ] **[Minor] Impersonation stays valid if the admin is deactivated** — `app/api/deps.py:148-155`.
+  The join checks the session's `jti`/target, but not that the impersonating admin
+  (`imp.admin_user_id`) is still `active`. The session is bounded at 60 min, and architecture §2
+  does not require this check. **Fix:** decide with the spec owner. If wanted, it is one more
+  `LEFT JOIN users a ON a.id = imp.admin_user_id`.
+
+- [ ] **[Minor] 401s carry no `WWW-Authenticate: Bearer` header** — `app/api/deps.py:178,248`.
+  RFC 6750 expects it, and some clients rely on it. Low priority; only add it if the spec's error
+  contract allows.
+
+### Positive Notes
+
+- The revalidation query matches §2 exactly, and a statement-capturing test locks in the
+  `IS true` and one-round-trip rules.
+- The coach `tid` mismatch is 401 and a deactivated tenant is 404. Both are tested, along with
+  impersonation of another target, ended/expired sessions and `act` without a session.
+- `player_context` builds `player_profile_ids` in one query (parent sees dependents, child sees only
+  itself), filters on an active trainer, and every miss is 404.
+- `rate_limit` refuses email-keyed classes at import time, so a misuse cannot reach production.
+- Dependencies end their read transactions explicitly, so services own their transaction. The
+  module docstring documents this.
+- The correlation id is validated before it is echoed or logged, and the single 500 path has a test
+  showing it logs exactly once.
+- Ports and fakes are recording and configurable to fail, as the plan specified.
+
+## Verification Evidence (DOD Standard tier)
+
+| Check | Command | Result |
+|---|---|---|
+| Lint | `uv run ruff check .` | PASS |
+| Format | `uv run ruff format --check .` | PASS (106 files) |
+| Types | `uv run mypy app tests` | PASS (106 files, 0 issues) |
+| Tests | `uv run pytest -q --cov=app` | PASS: 178 passed, 1 xfailed (strict, `/me` until Task 17), 96% (under-reported, see Minor #1) |
+| Warnings | `pytest -W default` | testcontainers deprecations; `ResourceWarning` unclosed Redis connection in `test_principal_rate_limit_is_per_user` (test hygiene only) |
+| Naming | `ls tasks/TASK-001` | PASS: all skill-prefixed |
+| Committed | `git status` | PASS: clean |
+
+---
+
 # Code Review — TASK-001 Phase B (Tasks 9-10: models, migration `0002_identity`, repositories)
 
 Scope: commits `9289861` (asyncpg constraint name), `c4562ed` (rate limiter fail-open), `41c50e2`
