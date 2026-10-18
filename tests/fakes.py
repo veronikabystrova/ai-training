@@ -36,6 +36,22 @@ class FakeEmailSender:
         self.sent.append(SentEmail(to, template, context))
 
 
+@dataclass(frozen=True)
+class EnqueuedJob:
+    name: str
+    kwargs: dict[str, str]
+
+
+class FakeJobQueue:
+    """Records ``(name, kwargs)`` of every enqueued job."""
+
+    def __init__(self) -> None:
+        self.enqueued: list[EnqueuedJob] = []
+
+    async def enqueue(self, name: str, **kwargs: str) -> None:
+        self.enqueued.append(EnqueuedJob(name, kwargs))
+
+
 class FakeObjectStorage:
     def __init__(self) -> None:
         self.objects: dict[str, tuple[bytes, str]] = {}

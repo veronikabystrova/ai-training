@@ -31,8 +31,15 @@ from app.core.errors import (
     UnprocessableError,
 )
 from app.core.idempotency import request_hash
+from app.core.jobs import JobQueue
 from app.core.ratelimit import RateLimiter, RouteClass
-from app.core.security import ClientFingerprint, PasswordHasher, TokenIssuer, salted_hash
+from app.core.security import (
+    ClientFingerprint,
+    PasswordHasher,
+    PasswordPolicyPort,
+    TokenIssuer,
+    salted_hash,
+)
 from app.db.session import SessionFactory
 from app.models.identity import (
     CoachProfile,
@@ -104,6 +111,16 @@ def get_hasher(request: Request) -> PasswordHasher:
     return hasher
 
 
+def get_password_policy(request: Request) -> PasswordPolicyPort:
+    policy: PasswordPolicyPort = request.app.state.password_policy
+    return policy
+
+
+def get_job_queue(request: Request) -> JobQueue:
+    jobs: JobQueue = request.app.state.job_queue
+    return jobs
+
+
 def get_fingerprint(
     request: Request, settings: Annotated[Settings, Depends(get_settings_dep)]
 ) -> ClientFingerprint:
@@ -122,6 +139,8 @@ SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
 HasherDep = Annotated[PasswordHasher, Depends(get_hasher)]
 FingerprintDep = Annotated[ClientFingerprint, Depends(get_fingerprint)]
+PasswordPolicyDep = Annotated[PasswordPolicyPort, Depends(get_password_policy)]
+JobQueueDep = Annotated[JobQueue, Depends(get_job_queue)]
 
 
 # --- authentication ------------------------------------------------------------------------

@@ -1,6 +1,8 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.api.v1.common import AuthResponse, SessionUser, TokenPair
+from app.api.v1.common import AuthResponse, Password, SessionUser, TokenPair
 from app.services.auth_service import IssuedSession, TokenSet
 
 
@@ -21,6 +23,36 @@ class LogoutRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     refresh_token: str  # identifies the family; must belong to the caller
+
+
+class PasswordResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+
+
+class PasswordResetConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=20, max_length=200)
+    new_password: Password
+
+
+class VerifyEmailRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=20, max_length=200)
+
+
+class PasswordSetupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=20, max_length=200)
+    new_password: Password
+
+
+class StatusResponse(BaseModel):
+    status: Literal["accepted", "already_verified"]
 
 
 def token_pair(tokens: TokenSet) -> TokenPair:

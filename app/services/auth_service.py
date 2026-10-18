@@ -13,13 +13,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import Clock
 from app.core.config import Settings
-from app.core.errors import NotFoundError, UnauthorizedError
+from app.core.errors import BadRequestError, NotFoundError, UnauthorizedError
 from app.core.ids import new_id
+from app.core.jobs import JobQueue
 from app.core.ratelimit import RateLimiter, RouteClass
-from app.core.security import ClientFingerprint, PasswordHasher, TokenIssuer, hash_token
-from app.models.identity import User, UserRole, UserStatus
+from app.core.security import (
+    ClientFingerprint,
+    PasswordHasher,
+    PasswordPolicyPort,
+    TokenIssuer,
+    hash_token,
+)
+from app.models.identity import OttPurpose, User, UserRole, UserStatus
 from app.repositories.coach_profile import CoachProfileRepository
 from app.repositories.impersonation import ImpersonationSessionRepository
+from app.repositories.one_time_token import OneTimeTokenRepository
 from app.repositories.player import PlayerProfileRepository
 from app.repositories.refresh_token import RefreshTokenRepository
 from app.repositories.user import UserRepository
@@ -45,6 +53,11 @@ def _invalid_credentials() -> UnauthorizedError:
     return UnauthorizedError("INVALID_CREDENTIALS", "Invalid credentials")
 
 
+def _token_invalid() -> BadRequestError:
+    # One code and message for unknown, expired, used and mismatched tokens: no oracle.
+    return BadRequestError("TOKEN_INVALID", "Token is invalid or expired")
+
+
 def _invalid_refresh() -> UnauthorizedError:
     return UnauthorizedError("INVALID_REFRESH_TOKEN", "Invalid refresh token")
 
@@ -60,6 +73,8 @@ class AuthService:
         issuer: TokenIssuer,
         limiter: RateLimiter,
         audit: AuditService,
+        policy: PasswordPolicyPort,
+        jobs: JobQueue,
     ) -> None:
         self._session = session
         self._settings = settings
@@ -68,11 +83,14 @@ class AuthService:
         self._issuer = issuer
         self._limiter = limiter
         self._audit = audit
+        self._policy = policy
+        self._jobs = jobs
         self._users = UserRepository(session)
         self._coaches = CoachProfileRepository(session)
         self._players = PlayerProfileRepository(session)
         self._refresh_tokens = RefreshTokenRepository(session)
         self._impersonations = ImpersonationSessionRepository(session)
+        self._tokens = OneTimeTokenRepository(session)
 
     # --- login -----------------------------------------------------------------------------
 
@@ -203,3 +221,103 @@ class AuthService:
             raise NotFoundError()  # never confirm that someone else's token exists
         await self._refresh_tokens.revoke_family(row.family_id, now=self._clock.now())
         await self._session.commit()
+
+    # --- password reset, email verification, trainer setup ----------------------------------
+
+    def _ott_ttl(self, purpose: OttPurpose) -> timedelta:
+        return timedelta(hours=self._settings.ott_ttl_hours[purpose.value])
+
+    async def request_password_reset(self, *, email: str) -> None:
+        """Always succeeds from the caller's view; only an active user gets a token and a job."""
+        await self._limiter.hit(RouteClass.password_reset_email, email)
+        user = await self._users.get_by_email(email)
+        if user is None or user.status is not UserStatus.active:
+            return
+        raw = await self._tokens.issue(
+            user_id=user.id,
+            purpose=OttPurpose.password_reset,
+            ttl=self._ott_ttl(OttPurpose.password_reset),
+            now=self._clock.now(),
+        )
+        await self._session.commit()
+        await self._jobs.enqueue("send_password_reset", user_id=str(user.id), token=raw)
+
+    async def confirm_password_reset(self, *, token: str, new_password: str) -> None:
+        # Policy and hashing run before the token is consumed: a weak password leaves the
+        # link usable, and the row lock is not held across the argon2 work.
+        self._policy.validate(new_password)
+        digest = await self._hasher.hash(new_password)
+        now = self._clock.now()
+        consumed = await self._tokens.consume(raw=token, purpose=OttPurpose.password_reset, now=now)
+        if consumed is None:
+            raise _token_invalid()
+        user = await self._users.get(consumed.user_id)
+        if user is None or user.status is not UserStatus.active:
+            raise _token_invalid()  # the request session rolls the consume back
+        user.password_hash = digest
+        user.must_change_password = False
+        await self._refresh_tokens.revoke_all_for_user(user.id, now=now)
+        await self._audit.record(
+            action="auth.password_reset",
+            actor_id=user.id,
+            subject_type="user",
+            subject_id=user.id,
+        )
+        await self._session.commit()
+
+    async def verify_email(self, *, token: str) -> None:
+        consumed = await self._tokens.consume(
+            raw=token, purpose=OttPurpose.email_verify, now=self._clock.now()
+        )
+        if consumed is None:
+            raise _token_invalid()
+        user = await self._users.get(consumed.user_id)
+        if user is None or user.status is not UserStatus.active:
+            raise _token_invalid()
+        user.is_email_verified = True
+        await self._session.commit()
+
+    async def resend_email_verification(self, *, user_id: UUID) -> bool:
+        """True when a new token was issued, False when the address is already verified."""
+        user = await self._users.get(user_id)
+        if user is None:
+            raise UnauthorizedError()
+        if user.is_email_verified:
+            return False
+        raw = await self._tokens.issue(
+            user_id=user.id,
+            purpose=OttPurpose.email_verify,
+            ttl=self._ott_ttl(OttPurpose.email_verify),
+            now=self._clock.now(),
+        )
+        await self._session.commit()
+        await self._jobs.enqueue("send_email_verification", user_id=str(user.id), token=raw)
+        return True
+
+    async def setup_password(
+        self, *, token: str, new_password: str, client: ClientFingerprint
+    ) -> IssuedSession:
+        """Provisioned trainer: pending -> active in one transaction, then a session."""
+        self._policy.validate(new_password)
+        digest = await self._hasher.hash(new_password)
+        now = self._clock.now()
+        consumed = await self._tokens.consume(raw=token, purpose=OttPurpose.trainer_setup, now=now)
+        if consumed is None:
+            raise _token_invalid()
+        user = await self._users.get(consumed.user_id)
+        if user is None or user.status is not UserStatus.pending:
+            raise _token_invalid()
+        user.password_hash = digest
+        user.status = UserStatus.active
+        user.must_change_password = False
+        user.is_email_verified = True  # the invite reached the mailbox
+        user.last_login_at = now
+        await self._audit.record(
+            action="auth.password_setup",
+            actor_id=user.id,
+            subject_type="user",
+            subject_id=user.id,
+        )
+        issued = await self._issue_session(user, client)
+        await self._session.commit()
+        return issued

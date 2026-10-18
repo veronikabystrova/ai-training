@@ -9,11 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.main import create_app
 from tests.api.probes import router as probe_router
-from tests.fakes import FakeClock
+from tests.fakes import FakeClock, FakeJobQueue
 
 
 @pytest.fixture
-def app(settings: Settings, clock: FakeClock, db_session: AsyncSession) -> FastAPI:
+def app(
+    settings: Settings, clock: FakeClock, db_session: AsyncSession, jobs: FakeJobQueue
+) -> FastAPI:
     """The real app (middleware, error handlers, routers) plus probe routes.
 
     Every session, in dependencies and middleware alike, is the one rolled-back test session.
@@ -26,6 +28,7 @@ def app(settings: Settings, clock: FakeClock, db_session: AsyncSession) -> FastA
 
     application.state.session_factory = shared_session
     application.state.effects = []
+    application.state.job_queue = jobs
     application.include_router(probe_router)
     return application
 

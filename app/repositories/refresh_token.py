@@ -75,6 +75,15 @@ class RefreshTokenRepository:
         )
         return rowcount(result)
 
+    async def revoke_all_for_user(self, user_id: UUID, *, now: datetime) -> int:
+        """Revoke every live family of a user (password reset: all sessions end)."""
+        result = await self._s.execute(
+            update(RefreshToken)
+            .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=now)
+        )
+        return rowcount(result)
+
     async def purge(self, *, before: datetime) -> int:
         result = await self._s.execute(delete(RefreshToken).where(RefreshToken.expires_at < before))
         return rowcount(result)
