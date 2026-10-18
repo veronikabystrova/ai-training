@@ -97,13 +97,14 @@ class TenantScope:
 |---|---|---|---|
 | `get_session` | `SessionDep = Annotated[AsyncSession, Depends(get_session)]` | One `AsyncSession` per request; services open the transaction | — |
 | `current_principal` | `PrincipalDep` | Decode JWT (HS256, `exp`, `typ=access`). Then **one SQL round trip** (see below) re-validates against the DB | 401 `INVALID_TOKEN` / `IMPERSONATION_EXPIRED`; 404 if trainer tenant deactivated (G-15) |
+| `current_principal_any_tenure` | `AnyTenurePrincipalDep` | Same as `current_principal`, but a coach whose tenure is inactive is accepted (`trainer_id=None`) instead of 401. Used **only** on `POST /auth/register` for the authenticated coach move (user decision 2026-10-18) | as `current_principal` otherwise |
 | `optional_principal` | `OptionalPrincipalDep` | Same, but `None` when no `Authorization` header (public routes that personalise) | as above if a header is present |
 | `require_role(*roles)` | `Depends(require_role(Role.trainer))` → `Principal` | Role gate only, no tenant logic | 403 `FORBIDDEN` |
 | `require_tenant_scope` | `TenantDep` | trainer/coach ⇒ `TenantScope(principal.trainer_id)`. player ⇒ delegates to `player_context`. super_admin ⇒ 403 (must use `SuperAdminScope`) | 403 / 404 |
 | `player_context` | `PlayerContextDep` (reads `trainer_id: UUID = Query()`) | Requires an active `trainer_player_links` row for a profile the caller owns (child: only its own profile) and an active trainer. Builds `player_profile_ids` | 404 `NOT_FOUND` (never 403: no tenant oracle) |
 | `SuperAdminScope` | `Annotated[Principal, Depends(require_super_admin)]` | Explicit, grep-able bypass marker. Rejects `act is not None` (impersonating admins cannot reach `/admin/*`, US-01.07) | 403 |
 | `idempotency` | `IdempotencyDep` | Reads `Idempotency-Key`, scoped by `principal.user_id`; replays stored response; different hash ⇒ 409 | 409 `IDEMPOTENCY_KEY_REUSED` |
-| `rate_limit(route_class)` | `Depends(rate_limit(RouteClass.login))` | Keyed per route class by IP / email / principal (limits in brainstorm design). **Redis outage: fail-open** on every route class (user decision 2026-10-18): the request proceeds unthrottled and a `rate_limit_unavailable` warning is logged. **Client IP = the socket peer address** (`request.client.host`); no proxy in front of the app for now, so `X-Forwarded-For` is ignored (user decision 2026-10-18; revisit with trusted-proxy config when a load balancer is added) | 429 + `Retry-After` |
+| `rate_limit(route_class)` | `Depends(rate_limit(RouteClass.login))` | Keyed per route class by IP / email / principal (limits in brainstorm design). The `default` class keys by principal, or by client IP when the route has no principal (e.g. `/auth/refresh`) (user decision 2026-10-18). **Redis outage: fail-open** on every route class (user decision 2026-10-18): the request proceeds unthrottled and a `rate_limit_unavailable` warning is logged. **Client IP = the socket peer address** (`request.client.host`); no proxy in front of the app for now, so `X-Forwarded-For` is ignored (user decision 2026-10-18; revisit with trusted-proxy config when a load balancer is added) | 429 + `Retry-After` |
 
 **`current_principal` revalidation query** (single statement, indexed lookups only, keeps `GET /me` p95 < 100 ms):
 
@@ -231,7 +232,8 @@ All wrapped in `core/` so a replacement touches one module. Versions verified on
   opaque refresh 30 d, rotating, reuse ⇒ family revoked. Refresh and one-time tokens stored only as SHA-256.
 - **AuthZ:** role gates in `deps.py`; object-level checks in services; cross-tenant ⇒ 404. `trainer_id`
   only from `Principal`/`TenantScope`. `/admin/*` requires `SuperAdminScope` and rejects impersonation.
-- **Impersonation:** never targets a super_admin; ≤ 60 min; refresh bounded by session `expires_at` (G-14);
+- **Impersonation:** never targets a super_admin; ≤ 60 min; refresh bounded by session `expires_at` (G-14); the refresh family is linked to its session by convention
+  `refresh_tokens.family_id == impersonation_sessions.jti` (no FK column; user decision 2026-10-18);
   middleware writes an `audit_log` row for every `act`-bearing request and sets `X-Impersonated-By`.
   **Accepted risk (user decision 2026-10-18):** the audit row is written after the handler in its own
   session, so a failed audit write on a successful request returns 500 although the change is committed

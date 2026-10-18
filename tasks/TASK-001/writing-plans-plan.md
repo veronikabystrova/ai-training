@@ -1328,7 +1328,7 @@ async def test_200_way_static_registration_no_lost_writes(committed_app, static_
 
 **Step 2:** Run: `uv run pytest tests/api/auth/test_register.py tests/concurrency` Expected: FAIL 404
 
-**Step 3: Implementation.** `ShareLinkService.redeem` follows the brainstorm flow in a single transaction: `lock_by_code` (`FOR UPDATE`) => validity checks (active, not expired, uses left, trainer active) => kind-specific branch => `increment_use` (rowcount 0 => `NOT_FOUND`-equivalent `SHARE_LINK_INVALID` 404) => `share_link_events(registered)` => commit => enqueue welcome + verification jobs. Map `uq_users_email` on a static link to `ACCOUNT_EXISTS` with `details=[{"next": "login_then_redeem"}]`: catch `EmailTakenError` in the service and re-raise with the details. Query exclusivity validated in the route via a dependency raising 422.
+**Step 3: Implementation.** `ShareLinkService.redeem` follows the brainstorm flow in a single transaction: `lock_by_code` (`FOR UPDATE`) => validity checks (active, not expired, uses left, trainer active) => kind-specific branch => `increment_use` (rowcount 0 => `NOT_FOUND`-equivalent `SHARE_LINK_INVALID` 404) => `share_link_events(registered)` => commit => enqueue welcome + verification jobs. Map `uq_users_email` on a static link to `ACCOUNT_EXISTS` with `details=[{"next": "login_then_redeem"}]`: catch `EmailTakenError` in the service and re-raise with the details. Query exclusivity validated in the route via a dependency raising 422. Coach move (user decision 2026-10-18): `current_principal` rejects a coach without an active tenure, so add `current_principal_any_tenure` (architecture §3 deps table) and use it only on `POST /auth/register`; every other route keeps the 401. Test: a coach whose tenure was closed logs in, redeems a `coach_unique` link of another trainer => new active row; the same token on any other route => 401.
 
 **Step 4:** Run: both files, `uv run pytest -m gate`. Expected: PASS
 
@@ -1344,7 +1344,7 @@ Spec: `POST /auth/impersonation/exit`. Impersonation start is Task 24.
 
 **Step 1:** Failing tests: `exit` with an `act` token => 204 and the same token now 401 `IMPERSONATION_EXPIRED`; refresh of the impersonation family after exit => 401; non-impersonating principal => 403 `FORBIDDEN`; expired session (FakeClock +60 min+1s) => 401 `IMPERSONATION_EXPIRED`.
 **Step 2:** Run: `uv run pytest tests/api/auth/test_impersonation_exit.py` Expected: FAIL 404
-**Step 3:** `ImpersonationService.exit(principal)` sets `ended_at`, revokes the family tied to the session. Fixture `impersonation_token` creates session + tokens directly via repositories.
+**Step 3:** `ImpersonationService.exit(principal)` sets `ended_at`, revokes the family tied to the session (`family_id == session.jti`, see architecture §5 Impersonation). Fixture `impersonation_token` creates session + tokens directly via repositories.
 **Step 4:** Run the file. Expected: PASS
 **Step 5:** `git add app tests && git commit -m "feat(auth): add impersonation exit"`
 
@@ -1642,7 +1642,7 @@ async def test_every_admin_route_non_admin_403_anonymous_401(client, ...) -> Non
 - Every route depends on `SuperAdminScope`.
 - `provision_trainer`: one transaction creating `users` (random 32-byte password hashed, `pending`, `must_change_password=True`), `profiles`, `trainer_profiles`, `trainer_setup` token (24 h), audit `trainer.created`, then enqueue `send_trainer_invite` after commit.
 - Erasure anonymiser (pure, unit-tested): email => `deleted-{id}@erased.invalid`, names => `Deleted User`, phone/school/avatar_key null, `password_hash` => unusable hash, `status=deleted`, `deleted_at=now`; dependents (`owner_user_id`) anonymised in the same transaction; `share_links.target_email` scrubbed; `UserErasure(original_email_hash=sha256(lower(email)), legal_retention_until=now + config years)`.
-- Impersonate: create `impersonation_sessions(expires_at=now+60m, jti)`, access token `act=admin`, `ttl=3600`, refresh family tagged to the session.
+- Impersonate: create `impersonation_sessions(expires_at=now+60m, jti)`, access token `act=admin`, `ttl=3600`, refresh family created with `family_id = session.jti` (the Task 13 refresh path relies on this link).
 - Directory keyset on `(created_at, id)` with `core.pagination` cursors; `query` uses `ILIKE` against trigram-indexed expressions.
 
 **Step 4:** Run: `uv run pytest tests/api/admin tests/services`. Expected: PASS. **Step 5:** `git add app tests && git commit -m "feat(admin): add directory, provisioning, lifecycle, erasure and impersonation"`
@@ -1756,7 +1756,7 @@ def test_argon2_verify_takes_at_least_100ms_with_production_params() -> None:
 
 **Step 2:** Run: `uv run pytest tests/e2e tests/unit/test_argon2_benchmark.py` Expected: FAIL for any behaviour not yet satisfied (fix in the owning service, not in the test)
 
-**Step 3:** Fix every gap the sweeps reveal in the owning module; do not weaken assertions.
+**Step 3:** Fix every gap the sweeps reveal in the owning module; do not weaken assertions. `RATE_LIMITED_ROUTES` includes `/auth/refresh` (default, per IP) and `/auth/logout` (default, per principal) (user decision 2026-10-18).
 
 **Step 4:** Run: `uv run pytest tests/e2e tests/unit`. Expected: PASS
 

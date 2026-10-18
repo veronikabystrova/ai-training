@@ -17,7 +17,7 @@
 | IDs / time | UUIDv7 strings; instants RFC 3339 UTC (`Z`); availability times are wall-clock `HH:MM` in the profile timezone |
 | Pagination | Cursor: `?limit=1..100 (default 50)&cursor=<opaque>` ⇒ `Page[T] = {items: [T], next_cursor: str | null}` |
 | Idempotency | Header `Idempotency-Key` (≤ 64 chars) on `POST /me/approvals/{id}/approve|deny`; replay returns stored response; different body hash ⇒ 409 `IDEMPOTENCY_KEY_REUSED` |
-| Rate limits | Defaults 300/min per principal. Overrides listed per endpoint. 429 `RATE_LIMITED` + `Retry-After` (seconds) |
+| Rate limits | Defaults 300/min per principal (per client IP on routes without a principal, e.g. `/auth/refresh`). Overrides listed per endpoint. 429 `RATE_LIMITED` + `Retry-After` (seconds) |
 | Response headers | `X-Correlation-Id` always. `X-Impersonated-By: <admin user_id>` when `act` is set. `Cache-Control: public, max-age=300` only on public branding |
 | Privacy | No schema exposes `password_hash`, token hashes, IP/UA hashes, `legal_retention_until`. Raw one-time/refresh tokens appear only in the response that issues them or in the email job |
 | Forced password change | Provisioned trainers are `pending` and cannot log in (401 `INVALID_CREDENTIALS`). `POST /auth/password/setup` activates the account and clears `must_change_password` in one transaction, so no authenticated principal ever carries `must_change_password=true` |
