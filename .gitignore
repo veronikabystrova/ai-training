@@ -161,3 +161,6 @@ cython_debug/
 
 **/gcp-credentials*.json
 **/.DS_Store
+
+# Git worktrees
+.worktrees/
