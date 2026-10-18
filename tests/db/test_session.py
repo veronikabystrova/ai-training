@@ -1,14 +1,18 @@
+import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.exc import DBAPIError
 
-from app.db.session import create_session_factory, get_session
+from app.db.session import create_engine
 
 
-async def test_get_session_yields_usable_session_then_closes(engine: AsyncEngine) -> None:
-    gen = aiter(get_session(create_session_factory(engine)))
-    session = await anext(gen)
-    assert (await session.execute(text("select 1"))).scalar_one() == 1
-    await session.execute(text("select 1"))
-    assert session.in_transaction()
-    await gen.aclose()  # type: ignore[attr-defined]
-    assert not session.in_transaction()
+async def test_engine_hides_bound_parameters_from_error_text(database_url: str) -> None:
+    engine = create_engine(database_url)
+    try:
+        async with engine.connect() as conn:
+            with pytest.raises(DBAPIError) as exc_info:
+                await conn.execute(text("select cast(:marker as int) / 0"), {"marker": 4242424})
+    finally:
+        await engine.dispose()
+    assert "division by zero" in str(exc_info.value)
+    assert "4242424" not in str(exc_info.value)
+    assert "[parameters: (" not in str(exc_info.value)

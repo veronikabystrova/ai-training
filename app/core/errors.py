@@ -37,6 +37,16 @@ class UnauthorizedError(DomainError):
     code = "INVALID_TOKEN"
     message = "Invalid token"
 
+    def __init__(
+        self,
+        code: str | None = None,
+        message: str | None = None,
+        details: list[dict[str, Any]] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        # RFC 9110 §15.5.2: a 401 must carry a challenge (RFC 6750 Bearer scheme).
+        super().__init__(code, message, details, {"WWW-Authenticate": "Bearer", **(headers or {})})
+
 
 class ForbiddenError(DomainError):
     status = 403

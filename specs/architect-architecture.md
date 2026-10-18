@@ -103,7 +103,7 @@ class TenantScope:
 | `player_context` | `PlayerContextDep` (reads `trainer_id: UUID = Query()`) | Requires an active `trainer_player_links` row for a profile the caller owns (child: only its own profile) and an active trainer. Builds `player_profile_ids` | 404 `NOT_FOUND` (never 403: no tenant oracle) |
 | `SuperAdminScope` | `Annotated[Principal, Depends(require_super_admin)]` | Explicit, grep-able bypass marker. Rejects `act is not None` (impersonating admins cannot reach `/admin/*`, US-01.07) | 403 |
 | `idempotency` | `IdempotencyDep` | Reads `Idempotency-Key`, scoped by `principal.user_id`; replays stored response; different hash ⇒ 409 | 409 `IDEMPOTENCY_KEY_REUSED` |
-| `rate_limit(route_class)` | `Depends(rate_limit(RouteClass.login))` | Keyed per route class by IP / email / principal (limits in brainstorm design). **Redis outage: fail-open** on every route class (user decision 2026-10-18): the request proceeds unthrottled and a `rate_limit_unavailable` warning is logged | 429 + `Retry-After` |
+| `rate_limit(route_class)` | `Depends(rate_limit(RouteClass.login))` | Keyed per route class by IP / email / principal (limits in brainstorm design). **Redis outage: fail-open** on every route class (user decision 2026-10-18): the request proceeds unthrottled and a `rate_limit_unavailable` warning is logged. **Client IP = the socket peer address** (`request.client.host`); no proxy in front of the app for now, so `X-Forwarded-For` is ignored (user decision 2026-10-18; revisit with trusted-proxy config when a load balancer is added) | 429 + `Retry-After` |
 
 **`current_principal` revalidation query** (single statement, indexed lookups only, keeps `GET /me` p95 < 100 ms):
 
@@ -112,11 +112,15 @@ users u (by sub)                              → status must be 'active' (pendi
 LEFT JOIN coach_profiles cp ON cp.user_id=u.id AND cp.is_active     (coach only)
 LEFT JOIN users t ON t.id = coalesce(<token trainer_id>, cp.trainer_id)  → tenant trainer status
 LEFT JOIN impersonation_sessions s ON s.jti = <token jti> AND <act present>  → ended_at IS NULL AND expires_at > now
+LEFT JOIN users a ON a.id = s.admin_user_id                                 → impersonating admin status must be 'active'
 ```
 
 - The DB is authoritative; token claims are hints. A coach whose active `trainer_id` no longer matches the
   token claim gets 401 `INVALID_TOKEN`, so the client refreshes and the new token carries the new tenant.
   Deactivation, coach moves and impersonation exit therefore take effect on the next request, not after 15 min.
+- An impersonated request (`act` present) also needs the impersonating super_admin to be `active`; otherwise
+  401 `IMPERSONATION_EXPIRED`. Deactivating an admin ends their impersonation on the next request instead of
+  at session expiry (user decision 2026-10-18).
 - `child` is computed at token issue. Revoking a child login sets that user `inactive`, which the status check catches.
 
 **Repository contract for tenant-scoped tables (FR-022):** methods take `trainer_id: UUID` as a required
@@ -229,6 +233,9 @@ All wrapped in `core/` so a replacement touches one module. Versions verified on
   only from `Principal`/`TenantScope`. `/admin/*` requires `SuperAdminScope` and rejects impersonation.
 - **Impersonation:** never targets a super_admin; ≤ 60 min; refresh bounded by session `expires_at` (G-14);
   middleware writes an `audit_log` row for every `act`-bearing request and sets `X-Impersonated-By`.
+  **Accepted risk (user decision 2026-10-18):** the audit row is written after the handler in its own
+  session, so a failed audit write on a successful request returns 500 although the change is committed
+  (a client retry may repeat it). Revisit by moving the audit write into `current_principal` (before the handler).
 - **Input:** Pydantic `extra="forbid"` on every request model; `EmailStr`; IANA timezones via `zoneinfo`.
 - **Uploads:** server-chosen keys (`avatars/{uuid7}`, `logos/{uuid7}`), presign constrains type/size, confirm re-checks via HEAD; SVG sanitised on confirm.
 - **Privacy:** structlog redaction by key name; IP and user agent stored as salted SHA-256; erasure per US-01.13 plus `share_links.target_email` and `one_time_tokens`.

@@ -245,6 +245,23 @@ async def test_expired_or_ended_impersonation_session_is_401(
     assert (r.status_code, code(r)) == (401, "IMPERSONATION_EXPIRED")
 
 
+async def test_impersonation_ends_when_the_admin_is_deactivated(
+    client: AsyncClient,
+    make_trainer: MakeTrainer,
+    make_user: MakeUser,
+    impersonation_token: ImpersonationFactory,
+    db_session: AsyncSession,
+) -> None:
+    admin = await make_user(role=UserRole.super_admin)
+    imp = await impersonation_token(await make_trainer(), admin=admin)
+    headers = bearer(imp.access)
+    assert (await client.get("/probe/principal", headers=headers)).status_code == 200
+    admin.status = UserStatus.inactive
+    await db_session.flush()
+    r = await client.get("/probe/principal", headers=headers)
+    assert (r.status_code, code(r)) == (401, "IMPERSONATION_EXPIRED")
+
+
 async def test_act_claim_without_session_is_401_impersonation_expired(
     client: AsyncClient,
     make_trainer: MakeTrainer,

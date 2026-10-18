@@ -3,10 +3,12 @@ from typing import Any
 
 import pytest
 import structlog
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import PrincipalDep
 from app.core.config import Settings
 from app.main import create_app
 from tests.api.helpers import bearer
@@ -128,3 +130,25 @@ async def test_domain_errors_are_not_logged_as_unhandled(client: AsyncClient) ->
         r = await client.get("/probe/principal")
     assert r.status_code == 401
     assert [e for e in logs if e["event"] == "unhandled_exception"] == []
+
+
+async def test_impersonated_request_that_crashes_is_still_audited(
+    app: FastAPI,
+    make_trainer: MakeTrainer,
+    impersonation_token: ImpersonationFactory,
+    db_session: AsyncSession,
+) -> None:
+    @app.get("/probe/crash")
+    async def crash(p: PrincipalDep) -> None:
+        raise RuntimeError("crash")
+
+    imp = await impersonation_token(await make_trainer())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.get("/probe/crash", headers=bearer(imp.access))
+    assert r.status_code == 500
+    rows = (
+        await db_session.execute(
+            text("select method, path, action from audit_log where act_user_id is not null")
+        )
+    ).all()
+    assert rows == [("GET", "/probe/crash", "impersonated_request")]

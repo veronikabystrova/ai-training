@@ -118,6 +118,7 @@ class _PrincipalRow:
     session_found: bool
     session_ended: bool
     session_expires_at: datetime | None
+    admin_status: UserStatus | None
 
 
 async def _resolve(
@@ -132,6 +133,7 @@ async def _resolve(
     cp = aliased(CoachProfile)
     tenant = aliased(User)
     imp = aliased(ImpersonationSession)
+    admin = aliased(User)
     stmt = (
         select(
             u.status,
@@ -141,6 +143,7 @@ async def _resolve(
             imp.id.label("session_id"),
             imp.ended_at.label("session_ended_at"),
             imp.expires_at.label("session_expires_at"),
+            admin.status.label("admin_status"),
         )
         .select_from(u)
         .outerjoin(cp, and_(cp.user_id == u.id, cp.is_active))
@@ -153,6 +156,7 @@ async def _resolve(
                 true() if impersonating else false(),
             ),
         )
+        .outerjoin(admin, admin.id == imp.admin_user_id)
         .where(u.id == user_id)
     )
     row = (await session.execute(stmt)).one_or_none()
@@ -166,6 +170,7 @@ async def _resolve(
         session_found=row.session_id is not None,
         session_ended=row.session_ended_at is not None,
         session_expires_at=row.session_expires_at,
+        admin_status=row.admin_status,
     )
 
 
@@ -220,6 +225,7 @@ async def _authenticate(
         or row.session_ended
         or row.session_expires_at is None
         or row.session_expires_at <= clock.now()
+        or row.admin_status is not UserStatus.active  # admin deactivated mid-session
     ):
         raise UnauthorizedError("IMPERSONATION_EXPIRED", "Impersonation session expired")
 

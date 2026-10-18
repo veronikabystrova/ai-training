@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException
 from app.core.errors import (
     ConflictError,
     NotFoundError,
+    UnauthorizedError,
     install_error_handlers,
     map_integrity_error,
 )
@@ -141,3 +142,8 @@ async def test_non_standard_http_status_uses_fallback_code() -> None:
         r = await c.get("/teapot")
         assert r.status_code == 599
         assert r.json()["error"] == {"code": "HTTP_599", "message": "Error", "details": []}
+
+
+def test_unauthorized_error_carries_bearer_challenge() -> None:
+    assert UnauthorizedError().headers == {"WWW-Authenticate": "Bearer"}
+    assert UnauthorizedError("IMPERSONATION_EXPIRED").headers["WWW-Authenticate"] == "Bearer"

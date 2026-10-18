@@ -89,7 +89,7 @@ class Certification(BaseModel):
     year: int | None = Field(default=None, ge=1950, le=2100)
 ```
 
-Shared error codes (any endpoint): 401 `INVALID_TOKEN`, 401 `IMPERSONATION_EXPIRED`, 403 `FORBIDDEN`,
+Shared error codes (any endpoint): 401 `INVALID_TOKEN`, 401 `IMPERSONATION_EXPIRED` (every 401 carries `WWW-Authenticate: Bearer`), 403 `FORBIDDEN`,
 404 `NOT_FOUND`, 405 `METHOD_NOT_ALLOWED` (keeps the `Allow` header), 422 `VALIDATION_ERROR`,
 429 `RATE_LIMITED`, 500 `INTERNAL_ERROR`. Any other framework-raised status returns `HTTP_{status}`
 (e.g. `HTTP_415`).

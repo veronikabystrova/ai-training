@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Any, cast
 
@@ -15,17 +15,12 @@ SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
 
 def create_engine(url: str) -> AsyncEngine:
-    return create_async_engine(url, pool_pre_ping=True)
+    # hide_parameters: str() of a DB error must not carry bound values (emails, hashes) into logs.
+    return create_async_engine(url, pool_pre_ping=True, hide_parameters=True)
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
-
-
-async def get_session(factory: async_sessionmaker[AsyncSession]) -> AsyncIterator[AsyncSession]:
-    """Yield one AsyncSession per request. Services own commit/rollback; we only close."""
-    async with factory() as session:
-        yield session
 
 
 def rowcount(result: Result[Any]) -> int:
