@@ -1,5 +1,7 @@
 from collections.abc import AsyncIterator
+from typing import Any, cast
 
+from sqlalchemy import CursorResult, Result
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -20,3 +22,8 @@ async def get_session(factory: async_sessionmaker[AsyncSession]) -> AsyncIterato
     """Yield one AsyncSession per request. Services own commit/rollback; we only close."""
     async with factory() as session:
         yield session
+
+
+def rowcount(result: Result[Any]) -> int:
+    """Rows matched by an UPDATE/DELETE (``Result`` is typed without ``rowcount``)."""
+    return cast("CursorResult[Any]", result).rowcount
