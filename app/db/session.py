@@ -1,4 +1,5 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, Result
@@ -8,6 +9,9 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+
+# ``async_sessionmaker`` satisfies this; tests substitute a factory yielding one shared session.
+SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
 
 def create_engine(url: str) -> AsyncEngine:

@@ -3,10 +3,18 @@ from uuid import UUID
 from sqlalchemy import exists, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.core.ids import new_id
 from app.db.session import rowcount
-from app.models.identity import LinkSource, LinkStatus, TrainerPlayerLink
+from app.models.identity import (
+    LinkSource,
+    LinkStatus,
+    PlayerProfile,
+    TrainerPlayerLink,
+    User,
+    UserStatus,
+)
 
 
 class TrainerPlayerLinkRepository:
@@ -35,6 +43,33 @@ class TrainerPlayerLinkRepository:
             )
         )
         return bool(result.scalar())
+
+    async def active_profile_ids_for_caller(
+        self, *, trainer_id: UUID, user_id: UUID, child: bool
+    ) -> frozenset[UUID]:
+        """Profiles a player caller may act for under an active trainer (``player_context``).
+
+        A child sees only the profile it logs in to; any other player sees every profile it
+        owns (own plus dependents). Empty when the trainer is not active or no link is active.
+        """
+        trainer = aliased(User)
+        caller = (
+            PlayerProfile.login_user_id == user_id
+            if child
+            else PlayerProfile.owner_user_id == user_id
+        )
+        result = await self._s.execute(
+            select(PlayerProfile.id)
+            .join(TrainerPlayerLink, TrainerPlayerLink.player_profile_id == PlayerProfile.id)
+            .join(trainer, trainer.id == TrainerPlayerLink.trainer_id)
+            .where(
+                TrainerPlayerLink.trainer_id == trainer_id,
+                TrainerPlayerLink.status == LinkStatus.active,
+                trainer.status == UserStatus.active,
+                caller,
+            )
+        )
+        return frozenset(result.scalars())
 
     async def list_for_trainer(
         self, *, trainer_id: UUID, status: LinkStatus = LinkStatus.active

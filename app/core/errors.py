@@ -112,7 +112,7 @@ _HTTP_CODES: dict[int, str] = {
 }
 
 
-def _internal_error() -> JSONResponse:
+def internal_error() -> JSONResponse:
     return JSONResponse(_envelope("INTERNAL_ERROR", "Internal server error", []), 500)
 
 
@@ -128,7 +128,7 @@ def install_error_handlers(app: FastAPI) -> None:
         mapped = map_integrity_error(exc)
         if mapped is None:
             structlog.get_logger(__name__).error("unmapped_integrity_error", exc_info=exc)
-            return _internal_error()
+            return internal_error()
         return JSONResponse(_envelope(mapped.code, mapped.message, []), mapped.status)
 
     @app.exception_handler(RequestValidationError)
@@ -151,8 +151,3 @@ def install_error_handlers(app: FastAPI) -> None:
             exc.status_code,
             headers=dict(exc.headers) if exc.headers else None,
         )
-
-    @app.exception_handler(Exception)
-    async def _unhandled(_: Request, exc: Exception) -> JSONResponse:
-        structlog.get_logger(__name__).error("unhandled_exception", exc_info=exc)
-        return _internal_error()

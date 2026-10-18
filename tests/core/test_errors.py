@@ -30,10 +30,6 @@ def make_app() -> FastAPI:
             "COACH_ALREADY_ASSIGNED", "taken", details=[{"current_trainer_id": "abc"}]
         )
 
-    @app.get("/boom")
-    async def boom() -> None:
-        raise RuntimeError("boom")
-
     @app.get("/integrity")
     async def integrity() -> None:
         raise IntegrityError("stmt", {}, Exception("x"))
@@ -117,11 +113,10 @@ async def test_unknown_route_and_wrong_method_use_envelope() -> None:
         assert "allow" in r.headers
 
 
-@pytest.mark.parametrize("path", ["/boom", "/integrity"])
-async def test_unhandled_errors_return_500_envelope(path: str) -> None:
-    transport = ASGITransport(app=make_app(), raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://t") as c:
-        r = await c.get(path)
+async def test_unmapped_integrity_error_returns_500_envelope() -> None:
+    # Unhandled exceptions are answered by CorrelationIdMiddleware (tests/api/test_middleware.py).
+    async with AsyncClient(transport=ASGITransport(app=make_app()), base_url="http://t") as c:
+        r = await c.get("/integrity")
         assert r.status_code == 500
         assert r.json()["error"]["code"] == "INTERNAL_ERROR"
 

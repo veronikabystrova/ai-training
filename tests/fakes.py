@@ -1,7 +1,10 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from uuid import UUID
 
 from app.core.storage import ObjectMeta, PresignedPut
+from app.models.identity import PurchaseApproval
 
 
 class FakeClock:
@@ -55,3 +58,51 @@ class FakeObjectStorage:
 
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         self.objects[key] = (data, content_type)
+
+
+class FakeCommitmentChecker:
+    """Recording ``CommitmentChecker``. Set ``rsvps`` to block unlinking, ``error`` to fail."""
+
+    def __init__(self, *, rsvps: list[UUID] | None = None, error: Exception | None = None) -> None:
+        self.rsvps = rsvps or []
+        self.error = error
+        self.calls: list[tuple[UUID, UUID]] = []
+
+    async def future_paid_rsvps(self, player_profile_id: UUID, trainer_id: UUID) -> list[UUID]:
+        self.calls.append((player_profile_id, trainer_id))
+        if self.error:
+            raise self.error
+        return list(self.rsvps)
+
+
+class FakePurchaseExecutor:
+    """Recording ``PurchaseExecutor``. Set ``error`` to fail the purchase."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.executed: list[PurchaseApproval] = []
+
+    async def execute(self, approval: PurchaseApproval) -> None:
+        if self.error:
+            raise self.error
+        self.executed.append(approval)
+
+
+class FakeCampSubmissionReader:
+    """Recording ``CampSubmissionReader`` over a ``prefills`` mapping. Set ``error`` to fail."""
+
+    def __init__(
+        self,
+        prefills: Mapping[UUID, Mapping[str, str]] | None = None,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.prefills = dict(prefills or {})
+        self.error = error
+        self.requested: list[UUID] = []
+
+    async def get_prefill(self, submission_id: UUID) -> Mapping[str, str] | None:
+        self.requested.append(submission_id)
+        if self.error:
+            raise self.error
+        return self.prefills.get(submission_id)

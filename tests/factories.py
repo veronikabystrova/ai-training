@@ -1,6 +1,7 @@
 """Pytest fixtures that build committed-in-session ORM rows (flushed, never committed)."""
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from itertools import count
 from uuid import UUID
@@ -8,11 +9,13 @@ from uuid import UUID
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.ids import new_id
 from app.core.security import PasswordHasher, TokenIssuer
 from app.models.identity import (
     AvailabilityWindow,
     CoachProfile,
     Gender,
+    ImpersonationSession,
     LinkSource,
     PlayerProfile,
     Profile,
@@ -25,6 +28,7 @@ from app.models.identity import (
     UserRole,
     UserStatus,
 )
+from app.repositories.impersonation import ImpersonationSessionRepository
 from tests.fakes import FakeClock
 
 _seq = count(1)
@@ -42,6 +46,14 @@ LinkPlayer = Callable[..., Awaitable[TrainerPlayerLink]]
 AddWindow = Callable[..., Awaitable[AvailabilityWindow]]
 AddShareLink = Callable[..., Awaitable[ShareLink]]
 PrincipalToken = Callable[..., str]
+
+
+@dataclass(frozen=True)
+class ImpersonationToken:
+    access: str
+    admin_id: UUID
+    jti: UUID
+    session: ImpersonationSession
 
 
 def _parse(value: str | time) -> time:
@@ -235,3 +247,46 @@ def principal_token(clock: FakeClock) -> Callable[..., str]:
         return token
 
     return _token
+
+
+@pytest.fixture
+async def trainer_token(principal_token: PrincipalToken, make_trainer: MakeUser) -> str:
+    """Access token of a freshly created active trainer."""
+    return principal_token(await make_trainer())
+
+
+@pytest.fixture
+def impersonation_token(
+    db_session: AsyncSession, clock: FakeClock, make_user: MakeUser
+) -> Callable[..., Awaitable[ImpersonationToken]]:
+    """An open impersonation session for ``target`` plus the access token that carries it."""
+    issuer = TokenIssuer(secret=TEST_JWT_SECRET, access_ttl=900, clock=clock)
+
+    async def _make(
+        target: User,
+        *,
+        admin: User | None = None,
+        trainer_id: UUID | None = None,
+        minutes: int = 60,
+    ) -> ImpersonationToken:
+        admin = admin or await make_user(role=UserRole.super_admin)
+        jti = new_id()
+        session = await ImpersonationSessionRepository(db_session).open(
+            admin_user_id=admin.id,
+            target_user_id=target.id,
+            jti=jti,
+            expires_at=clock.now() + timedelta(minutes=minutes),
+            reason=None,
+        )
+        access, _ = issuer.issue_access(
+            user_id=target.id,
+            role=target.role.value,
+            trainer_id=trainer_id or (target.id if target.role is UserRole.trainer else None),
+            act=admin.id,
+            child=False,
+            jti=jti,
+            ttl=7200,  # outlive the session so tests exercise the session check, not exp
+        )
+        return ImpersonationToken(access=access, admin_id=admin.id, jti=jti, session=session)
+
+    return _make
