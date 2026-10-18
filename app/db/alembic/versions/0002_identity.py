@@ -310,7 +310,7 @@ def upgrade() -> None:
         _tstz("ended_at"),
         _tstz("expires_at", nullable=False),
         sa.Column("reason", sa.String(500), nullable=True),
-        sa.Column("jti", sa.String(64), nullable=False),
+        sa.Column("jti", pg.UUID(as_uuid=True), nullable=False),
         sa.PrimaryKeyConstraint("id", name="pk_impersonation_sessions"),
         _fk("impersonation_sessions", "admin_user_id", "users.id"),
         _fk("impersonation_sessions", "target_user_id", "users.id"),

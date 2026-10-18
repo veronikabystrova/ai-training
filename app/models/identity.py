@@ -5,7 +5,7 @@ All foreign keys are ``ON DELETE RESTRICT``. Repositories never commit.
 
 from datetime import date, datetime, time
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import (
@@ -77,16 +77,20 @@ class ApprovalStatus(StrEnum):
     expired = "expired"
 
 
+ShareLinkEventKind = Literal["opened", "registered"]
+SubjectType = Literal["player", "coach"]
+
+
 def _enum(cls: type[StrEnum], name: str) -> Enum:
     # Types are created by the migration, never by metadata.create_all.
     return Enum(cls, name=name, values_callable=lambda e: [m.value for m in e], create_type=False)
 
 
-def _tstz() -> Any:
+def _tstz() -> DateTime:
     return DateTime(timezone=True)
 
 
-def _fk(target: str) -> Any:
+def _fk(target: str) -> ForeignKey:
     return ForeignKey(target, ondelete="RESTRICT")
 
 
@@ -114,7 +118,7 @@ class User(IdMixin, TimestampMixin, Base):
     last_login_at: Mapped[datetime | None] = mapped_column(_tstz())
     deleted_at: Mapped[datetime | None] = mapped_column(_tstz())
 
-    profile: Mapped["Profile"] = relationship(back_populates="user", uselist=False)
+    profile: Mapped["Profile"] = relationship(back_populates="user", uselist=False, lazy="raise")
 
 
 class Profile(Base):
@@ -136,7 +140,7 @@ class Profile(Base):
     school: Mapped[str | None] = mapped_column(String(255))
     timezone: Mapped[str] = mapped_column(String(64), server_default="UTC")
 
-    user: Mapped[User] = relationship(back_populates="profile")
+    user: Mapped[User] = relationship(back_populates="profile", lazy="raise")
 
 
 class TrainerProfile(Base):
@@ -176,7 +180,7 @@ class CoachProfile(IdMixin, Base):
         Index("ix_coach_trainer_active", "trainer_id", postgresql_where=text("is_active")),
     )
 
-    user: Mapped[User] = relationship()
+    user: Mapped[User] = relationship(lazy="raise")
     user_id: Mapped[UUID] = mapped_column(_fk("users.id"))
     trainer_id: Mapped[UUID] = mapped_column(_fk("trainer_profiles.user_id"))
     bio: Mapped[str | None] = mapped_column(Text)
@@ -263,7 +267,7 @@ class ShareLinkEvent(IdMixin, Base):
     )
 
     share_link_id: Mapped[UUID] = mapped_column(_fk("share_links.id"))
-    kind: Mapped[str] = mapped_column(String(16))
+    kind: Mapped[ShareLinkEventKind] = mapped_column(String(16))
     occurred_at: Mapped[datetime] = mapped_column(_tstz(), server_default=func.now())
     user_agent_hash: Mapped[str | None] = mapped_column(String(64))
     ip_hash: Mapped[str | None] = mapped_column(String(64))
@@ -283,7 +287,7 @@ class AvailabilityWindow(IdMixin, Base):
         Index("ix_availability_windows_subject", "subject_type", "subject_id"),
     )
 
-    subject_type: Mapped[str] = mapped_column(String(16))
+    subject_type: Mapped[SubjectType] = mapped_column(String(16))
     subject_id: Mapped[UUID]
     weekday: Mapped[int] = mapped_column(SmallInteger)
     start_time: Mapped[time] = mapped_column(Time())
@@ -324,7 +328,7 @@ class ImpersonationSession(IdMixin, Base):
     ended_at: Mapped[datetime | None] = mapped_column(_tstz())
     expires_at: Mapped[datetime] = mapped_column(_tstz())
     reason: Mapped[str | None] = mapped_column(String(500))
-    jti: Mapped[str] = mapped_column(String(64))
+    jti: Mapped[UUID]
 
 
 class UserErasure(IdMixin, Base):

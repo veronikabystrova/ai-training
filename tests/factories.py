@@ -17,6 +17,7 @@ from app.models.identity import (
     Profile,
     ShareLink,
     ShareLinkKind,
+    SubjectType,
     TrainerPlayerLink,
     TrainerProfile,
     User,
@@ -168,7 +169,7 @@ def add_window(db_session: AsyncSession) -> Callable[..., Awaitable[Availability
         weekday: int,
         start: str | time,
         end: str | time,
-        subject_type: str = "player",
+        subject_type: SubjectType = "player",
     ) -> AvailabilityWindow:
         row = AvailabilityWindow(
             subject_type=subject_type,

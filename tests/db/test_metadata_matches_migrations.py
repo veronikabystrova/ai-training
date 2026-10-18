@@ -15,7 +15,12 @@ async def test_models_match_migrations(engine: AsyncEngine, database_url: str) -
 
     def _diff(sync_conn: Connection) -> list[Any]:
         ctx = MigrationContext.configure(
-            sync_conn, opts={"compare_type": True, "include_object": include_object}
+            sync_conn,
+            opts={
+                "compare_type": True,
+                "compare_server_default": True,
+                "include_object": include_object,
+            },
         )
         diff: list[Any] = compare_metadata(ctx, Base.metadata)
         return diff
