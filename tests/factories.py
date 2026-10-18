@@ -12,6 +12,7 @@ from app.core.security import PasswordHasher, TokenIssuer
 from app.models.identity import (
     AvailabilityWindow,
     CoachProfile,
+    Gender,
     LinkSource,
     PlayerProfile,
     Profile,
@@ -111,7 +112,7 @@ def make_player(
             owner_user_id=owner.id,
             display_name=display_name or f"Player {next(_seq)}",
             birth_date=date(2012, 5, 1),
-            gender="undisclosed",
+            gender=Gender.undisclosed,
         )
         db_session.add(row)
         await db_session.flush()
@@ -136,7 +137,7 @@ def make_dependent(
             login_user_id=login.id if login else None,
             display_name=f"Child {next(_seq)}",
             birth_date=birth_date,
-            gender="undisclosed",
+            gender=Gender.undisclosed,
             is_dependent=True,
         )
         db_session.add(row)

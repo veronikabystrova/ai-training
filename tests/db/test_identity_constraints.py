@@ -1,6 +1,6 @@
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import constraint_name, map_integrity_error
@@ -166,3 +166,13 @@ async def test_dependent_has_owner_and_optional_login(
 ) -> None:
     child = await make_dependent(with_login=True)
     assert child.is_dependent and child.owner_user_id != child.login_user_id
+
+
+async def test_gender_enum_rejects_unknown_value(
+    db_session: AsyncSession, make_player: MakePlayer
+) -> None:
+    player = await make_player()
+    with pytest.raises(DBAPIError, match="invalid input value for enum gender"):
+        await db_session.execute(
+            text("UPDATE player_profiles SET gender = 'robot' WHERE id = :id"), {"id": player.id}
+        )

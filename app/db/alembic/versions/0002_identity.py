@@ -25,6 +25,7 @@ _ENUMS: dict[str, tuple[str, ...]] = {
     "link_source": ("share_link", "parent_added", "camp_submission"),
     "link_status": ("active", "inactive"),
     "approval_status": ("pending", "approved", "denied", "expired"),
+    "gender": ("female", "male", "other", "undisclosed"),
 }
 
 
@@ -162,7 +163,7 @@ def upgrade() -> None:
         sa.Column("login_user_id", sa.Uuid(), nullable=True),
         sa.Column("display_name", sa.String(120), nullable=False),
         sa.Column("birth_date", sa.Date(), nullable=False),
-        sa.Column("gender", sa.String(16), nullable=False),
+        sa.Column("gender", _enum("gender"), nullable=False),
         sa.Column("skill_level", sa.String(50), nullable=True),
         sa.Column("school", sa.String(255), nullable=True),
         sa.Column("jersey_number", sa.SmallInteger(), nullable=True),

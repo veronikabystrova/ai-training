@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.ids import new_id
 from app.models.identity import (
     CoachProfile,
+    Gender,
     PlayerProfile,
     Profile,
     TrainerProfile,
@@ -60,7 +61,7 @@ async def test_coach_and_player_add(
             owner_user_id=owner.id,
             display_name="Added Player",
             birth_date=date(2012, 5, 1),
-            gender="undisclosed",
+            gender=Gender.undisclosed,
         )
     )
     assert await PlayerProfileRepository(db_session).get(player.id) is player

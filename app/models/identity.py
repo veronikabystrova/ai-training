@@ -70,6 +70,13 @@ class LinkStatus(StrEnum):
     inactive = "inactive"
 
 
+class Gender(StrEnum):
+    female = "female"
+    male = "male"
+    other = "other"
+    undisclosed = "undisclosed"
+
+
 class ApprovalStatus(StrEnum):
     pending = "pending"
     approved = "approved"
@@ -205,7 +212,7 @@ class PlayerProfile(IdMixin, TimestampMixin, Base):
     login_user_id: Mapped[UUID | None] = mapped_column(_fk("users.id"))
     display_name: Mapped[str] = mapped_column(String(120))
     birth_date: Mapped[date]
-    gender: Mapped[str] = mapped_column(String(16))
+    gender: Mapped[Gender] = mapped_column(_enum(Gender, "gender"))
     skill_level: Mapped[str | None] = mapped_column(String(50))
     school: Mapped[str | None] = mapped_column(String(255))
     jersey_number: Mapped[int | None] = mapped_column(SmallInteger)
