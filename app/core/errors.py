@@ -76,9 +76,21 @@ _CONSTRAINTS: dict[str, tuple[type[DomainError], str]] = {
 }
 
 
+def constraint_name(exc: IntegrityError) -> str | None:
+    """Violated constraint name, for both drivers.
+
+    asyncpg (our driver): SQLAlchemy wraps the error and the name lives on
+    ``orig.__cause__.constraint_name``. psycopg: ``orig.diag.constraint_name``.
+    """
+    orig = exc.orig
+    name = getattr(getattr(orig, "diag", None), "constraint_name", None)
+    if name is None:
+        name = getattr(getattr(orig, "__cause__", None), "constraint_name", None)
+    return name if isinstance(name, str) else None
+
+
 def map_integrity_error(exc: IntegrityError) -> DomainError | None:
-    name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-    hit = _CONSTRAINTS.get(name or "")
+    hit = _CONSTRAINTS.get(constraint_name(exc) or "")
     if hit is None:
         return None
     error_cls, code = hit
