@@ -14,6 +14,8 @@ from testcontainers.redis import RedisContainer
 
 from tests.fakes import FakeClock, FakeEmailSender, FakeObjectStorage
 
+pytest_plugins = ["tests.factories"]
+
 
 @pytest.fixture(scope="session")
 def pg_container() -> Iterator[PostgresContainer]:
