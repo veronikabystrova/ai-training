@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -94,6 +95,9 @@ class RegisterRequest(BaseModel):
     last_name: str = Field(min_length=1, max_length=100)
     phone: str | None = Field(default=None, max_length=32)
     timezone: str = Field(default="UTC", max_length=64)
+    # Required for a new player account (checked against the link kind and the clock in the
+    # service, 422); ignored for coach links and authenticated redemptions.
+    birth_date: date | None = None
     # A parent redeeming a static link for existing dependents; ``[]`` is rejected.
     player_profile_ids: list[UUID] | None = Field(default=None, min_length=1)
 

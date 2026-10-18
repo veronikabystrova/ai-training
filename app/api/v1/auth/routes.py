@@ -287,6 +287,7 @@ async def register(
             last_name=payload.last_name,
             phone=payload.phone,
             timezone=payload.timezone,
+            birth_date=payload.birth_date,
             player_profile_ids=payload.player_profile_ids,
         ),
         client=client,

@@ -70,6 +70,7 @@ async def _register(client: AsyncClient, code: str, email: str) -> Any:
             "password": STRONG,
             "first_name": "Ada",
             "last_name": "Lovelace",
+            "birth_date": "1990-04-12",
         },
     )
 

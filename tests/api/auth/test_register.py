@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -43,6 +43,7 @@ def body(email: str = "new@x.com", **extra: Any) -> dict[str, Any]:
         "password": STRONG,
         "first_name": "Ada",
         "last_name": "Lovelace",
+        "birth_date": "1990-04-12",
         **extra,
     }
 
@@ -97,6 +98,7 @@ async def test_static_link_registers_player_with_profile_and_link(
         )
     ).scalar_one()
     assert profile.is_dependent is False
+    assert profile.birth_date == date(1990, 4, 12)
     (tpl,) = await _links_of(db_session, profile.id)
     assert tpl.trainer_id == trainer.id
     assert tpl.source is LinkSource.share_link
@@ -227,6 +229,64 @@ async def test_invalid_bodies_are_422(
     r = await client.post(url(link.code), json={**body(), **extra})
     assert r.status_code == 422
     assert code(r) == "VALIDATION_ERROR"
+
+
+async def test_new_player_without_birth_date_is_422_and_consumes_nothing(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    make_trainer: MakeTrainer,
+    add_share_link: AddShareLink,
+) -> None:
+    link = await add_share_link(await make_trainer())
+    payload = body()
+    del payload["birth_date"]
+    for value in (payload, {**payload, "birth_date": None}):
+        r = await client.post(url(link.code), json=value)
+        assert r.status_code == 422
+        assert code(r) == "VALIDATION_ERROR"
+    assert await UserRepository(db_session).get_by_email("new@x.com") is None
+    await db_session.refresh(link)
+    assert link.use_count == 0
+
+
+async def test_future_birth_date_is_422_and_today_is_accepted(
+    client: AsyncClient,
+    clock: FakeClock,
+    make_trainer: MakeTrainer,
+    add_share_link: AddShareLink,
+) -> None:
+    link = await add_share_link(await make_trainer())
+    tomorrow = (clock.today() + timedelta(days=1)).isoformat()
+    r = await client.post(url(link.code), json=body(birth_date=tomorrow))
+    assert r.status_code == 422
+    assert code(r) == "VALIDATION_ERROR"
+    today = clock.today().isoformat()
+    assert (await client.post(url(link.code), json=body(birth_date=today))).status_code == 201
+
+
+async def test_malformed_birth_date_is_422(
+    client: AsyncClient, make_trainer: MakeTrainer, add_share_link: AddShareLink
+) -> None:
+    link = await add_share_link(await make_trainer())
+    r = await client.post(url(link.code), json=body(birth_date="12/04/1990"))
+    assert r.status_code == 422
+
+
+async def test_coach_link_ignores_birth_date(
+    client: AsyncClient,
+    make_trainer: MakeTrainer,
+    add_share_link: AddShareLink,
+    clock: FakeClock,
+) -> None:
+    trainer = await make_trainer()
+    link = await add_share_link(trainer, kind="coach_unique", target_email="c@x.com")
+    future = (clock.today() + timedelta(days=30)).isoformat()
+    payload = body("c@x.com", birth_date=future)
+    assert (await client.post(url(link.code), json=payload)).status_code == 201
+    link2 = await add_share_link(trainer, kind="coach_unique", target_email="d@x.com")
+    payload2 = body("d@x.com")
+    del payload2["birth_date"]
+    assert (await client.post(url(link2.code), json=payload2)).status_code == 201
 
 
 # --- invalid links -------------------------------------------------------------------------

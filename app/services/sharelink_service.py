@@ -23,6 +23,7 @@ from app.core.errors import (
     EmailTakenError,
     ForbiddenError,
     NotFoundError,
+    UnprocessableError,
     map_integrity_error,
 )
 from app.core.jobs import JobQueue
@@ -49,10 +50,6 @@ from app.repositories.trainer_player_link import TrainerPlayerLinkRepository
 from app.repositories.user import UserRepository
 from app.services.auth_service import AuthService, IssuedSession
 
-# players.birth_date is NOT NULL but registration collects none (open point: make it nullable
-# or collect it). Until then the implicit own profile carries this obvious sentinel.
-UNKNOWN_BIRTH_DATE = date(1900, 1, 1)
-
 
 @dataclass(frozen=True, slots=True)
 class RegisterInput:
@@ -62,6 +59,7 @@ class RegisterInput:
     last_name: str
     phone: str | None
     timezone: str
+    birth_date: date | None
     player_profile_ids: list[UUID] | None
 
 
@@ -83,6 +81,12 @@ class Linked:
 
 
 RegisterResult = Registered | Linked
+
+
+def _birth_date_invalid(message: str) -> UnprocessableError:
+    return UnprocessableError(
+        details=[{"field": "birth_date", "message": message}],
+    )
 
 
 def _share_link_invalid() -> NotFoundError:
@@ -197,6 +201,7 @@ class ShareLinkService:
             self._check_target_email(link, data.email)
         if data.player_profile_ids is not None:
             raise NotFoundError()  # a new account owns no profiles
+        birth_date = None if is_coach else self._required_birth_date(data)
 
         user = User(
             email=data.email,
@@ -224,7 +229,7 @@ class ShareLinkService:
                 PlayerProfile(
                     owner_user_id=user.id,
                     display_name=f"{data.first_name} {data.last_name}"[:120],
-                    birth_date=UNKNOWN_BIRTH_DATE,
+                    birth_date=birth_date,
                     gender=Gender.undisclosed,
                 )
             )
@@ -250,6 +255,14 @@ class ShareLinkService:
             "send_verification_email", user_id=str(user.id), token=verify_token
         )
         return Registered(issued)
+
+    def _required_birth_date(self, data: RegisterInput) -> date:
+        """A new player account must state a birth date, never in the future (422)."""
+        if data.birth_date is None:
+            raise _birth_date_invalid("required to create a player account")
+        if data.birth_date > self._clock.now().date():
+            raise _birth_date_invalid("must not be in the future")
+        return data.birth_date
 
     async def _insert_user(self, user: User, *, is_coach: bool) -> None:
         """Insert in a savepoint; a duplicate email becomes the flow's conflict, not a 500."""
