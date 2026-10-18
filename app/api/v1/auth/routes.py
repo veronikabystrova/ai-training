@@ -40,6 +40,7 @@ from app.core.ratelimit import RouteClass
 from app.repositories.audit import AuditRepository
 from app.services.audit_service import DbAuditService
 from app.services.auth_service import AuthService
+from app.services.impersonation_service import ImpersonationService
 from app.services.sharelink_service import (
     Registered,
     RegisterInput,
@@ -299,3 +300,26 @@ async def register(
         linked_trainer_id=result.linked_trainer_id,
     )
     return JSONResponse(jsonable_encoder(body), status_code=200)
+
+
+def get_impersonation_service(session: SessionDep, clock: ClockDep) -> ImpersonationService:
+    return ImpersonationService(session=session, clock=clock)
+
+
+ImpersonationServiceDep = Annotated[ImpersonationService, Depends(get_impersonation_service)]
+
+
+@router.post(
+    "/impersonation/exit",
+    status_code=204,
+    summary="End the current impersonation session",
+    dependencies=[Depends(rate_limit(RouteClass.default_principal))],
+    responses={
+        401: {"description": "IMPERSONATION_EXPIRED or not authenticated"},
+        403: {"description": "FORBIDDEN (not impersonating)"},
+        429: _ERRORS[429],
+    },
+)
+async def impersonation_exit(principal: PrincipalDep, service: ImpersonationServiceDep) -> Response:
+    await service.exit(act=principal.act, session_jti=principal.jti)
+    return Response(status_code=204)
