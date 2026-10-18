@@ -112,6 +112,8 @@ class RegisterRequest(BaseModel):                      # extra="forbid"
     last_name: str = Field(min_length=1, max_length=100)
     phone: str | None = Field(default=None, max_length=32)
     timezone: str = "UTC"
+    birth_date: date | None = None                     # required for a new player account (static link), else 422 VALIDATION_ERROR;
+                                                       # must not be in the future; ignored for coach links (user decision 2026-10-18)
     player_profile_ids: list[UUID] | None = None       # parent registering existing dependents for a static link
 ```
 
