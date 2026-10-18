@@ -368,9 +368,17 @@ _CONSTRAINTS: dict[str, tuple[type[DomainError], str]] = {
 }
 
 
+def constraint_name(exc: IntegrityError) -> str | None:
+    # asyncpg (our driver): name is on orig.__cause__.constraint_name; psycopg: orig.diag.constraint_name.
+    orig = exc.orig
+    name = getattr(getattr(orig, "diag", None), "constraint_name", None)
+    if name is None:
+        name = getattr(getattr(orig, "__cause__", None), "constraint_name", None)
+    return name if isinstance(name, str) else None
+
+
 def map_integrity_error(exc: IntegrityError) -> DomainError | None:
-    name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-    hit = _CONSTRAINTS.get(name or "")
+    hit = _CONSTRAINTS.get(constraint_name(exc) or "")
     return hit[0](hit[1], hit[1].replace("_", " ").capitalize()) if hit else None
 
 
@@ -878,18 +886,20 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text
 
+from app.core.errors import constraint_name  # asyncpg: no orig.diag, see Task 2
+
 async def test_email_unique_case_insensitive(db_session, make_user) -> None:
     await make_user(email="A@x.com")
     with pytest.raises(IntegrityError) as e:
         await make_user(email="a@X.com")
-    assert e.value.orig.diag.constraint_name == "uq_users_email"
+    assert constraint_name(e.value) == "uq_users_email"
 
 async def test_one_active_coach_tenure(db_session, make_trainer, make_coach) -> None:
     t1, t2 = await make_trainer(), await make_trainer()
     coach = await make_coach(t1)
     with pytest.raises(IntegrityError) as e:
         await make_coach(t2, user=coach.user)
-    assert e.value.orig.diag.constraint_name == "uq_coach_one_active_trainer"
+    assert constraint_name(e.value) == "uq_coach_one_active_trainer"
 
 async def test_inactive_tenures_do_not_collide(db_session, make_trainer, make_coach) -> None:
     t1, t2 = await make_trainer(), await make_trainer()
@@ -904,7 +914,7 @@ async def test_availability_overlap_rejected_touching_allowed(db_session, make_p
     await add_window(p.id, weekday=0, start="10:00", end="11:00")      # touching ok
     with pytest.raises(IntegrityError) as e:
         await add_window(p.id, weekday=0, start="10:30", end="11:30")
-    assert e.value.orig.diag.constraint_name == "ex_availability_no_overlap"
+    assert constraint_name(e.value) == "ex_availability_no_overlap"
 
 async def test_share_link_kind_checks(db_session, make_trainer, add_share_link) -> None:
     t = await make_trainer()
@@ -1112,6 +1122,11 @@ async def current_principal(request: Request, session: SessionDep, issuer: Issue
 
 PrincipalDep = Annotated[Principal, Depends(current_principal)]
 ```
+
+Query rules (from the Phase B review, verified with `EXPLAIN`):
+- Filter active coach tenures with the bare column (`cp.is_active` / `CoachProfile.is_active`), never `.is_(True)` / `IS true`: that disables the partial indexes `uq_coach_one_active_trainer` and `ix_coach_trainer_active` and falls back to a seq scan on every authenticated request.
+- `impersonation_sessions.jti` is `uuid`: bind the token's `jti` as a `UUID` (`Principal.jti`), not `str(jti)`, or asyncpg raises a type error.
+- Reuse `CoachProfileRepository` / `ImpersonationSessionRepository` query fragments where possible instead of re-writing the predicates.
 
 Rules to encode: `status != active` => 401 `INVALID_TOKEN`; token `tid` differs from DB tenant (coach) => 401 `INVALID_TOKEN`; tenant trainer `status != active` => 404; `act` present and session missing/ended/expired => 401 `IMPERSONATION_EXPIRED`; `require_role(*roles)` => 403 `FORBIDDEN`; `require_tenant_scope` (trainer/coach => scope, player => `player_context`, super_admin => 403); `player_context(trainer_id: UUID = Query())` => 404 on any miss; `SuperAdminScope` rejects `act`; `IdempotencyDep`; `rate_limit(route_class)` dependency factory. `services/ports.py` defines `CommitmentChecker`, `PurchaseExecutor`, `CampSubmissionReader` Protocols plus `FakeCommitmentChecker`, `FakePurchaseExecutor`, `FakeCampSubmissionReader` (recording, configurable to fail) in `tests/fakes.py`.
 
