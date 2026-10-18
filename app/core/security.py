@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import os
 import secrets
+from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -24,6 +25,19 @@ def hash_token(raw: str) -> bytes:
 
 def new_opaque_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def salted_hash(salt: str, value: str) -> str:
+    """Hex SHA-256 of ``salt + value``: how IPs and user agents are stored (privacy)."""
+    return hashlib.sha256(f"{salt}:{value}".encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class ClientFingerprint:
+    """Salted hashes of the caller's IP and user agent; ``None`` when the request lacks them."""
+
+    ip_hash: str | None = None
+    user_agent_hash: str | None = None
 
 
 class PasswordHasher:

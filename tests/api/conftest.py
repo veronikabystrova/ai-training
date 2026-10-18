@@ -9,18 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.main import create_app
 from tests.api.probes import router as probe_router
-from tests.factories import TEST_JWT_SECRET
 from tests.fakes import FakeClock
-
-
-@pytest.fixture
-def settings(database_url: str, redis_url: str) -> Settings:
-    return Settings(
-        database_url=database_url,
-        redis_url=redis_url,
-        jwt_secret=TEST_JWT_SECRET,
-        hash_salt="s" * 16,
-    )
 
 
 @pytest.fixture

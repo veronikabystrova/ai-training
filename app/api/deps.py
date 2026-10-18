@@ -32,7 +32,7 @@ from app.core.errors import (
 )
 from app.core.idempotency import request_hash
 from app.core.ratelimit import RateLimiter, RouteClass
-from app.core.security import TokenIssuer
+from app.core.security import ClientFingerprint, PasswordHasher, TokenIssuer, salted_hash
 from app.db.session import SessionFactory
 from app.models.identity import (
     CoachProfile,
@@ -99,11 +99,29 @@ def get_rate_limiter(request: Request) -> RateLimiter:
     return limiter
 
 
+def get_hasher(request: Request) -> PasswordHasher:
+    hasher: PasswordHasher = request.app.state.hasher
+    return hasher
+
+
+def get_fingerprint(
+    request: Request, settings: Annotated[Settings, Depends(get_settings_dep)]
+) -> ClientFingerprint:
+    salt = settings.hash_salt.get_secret_value()
+    user_agent = request.headers.get("User-Agent")
+    return ClientFingerprint(
+        ip_hash=salted_hash(salt, request.client.host) if request.client else None,
+        user_agent_hash=salted_hash(salt, user_agent) if user_agent else None,
+    )
+
+
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 ClockDep = Annotated[Clock, Depends(get_clock)]
 IssuerDep = Annotated[TokenIssuer, Depends(get_issuer)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
+HasherDep = Annotated[PasswordHasher, Depends(get_hasher)]
+FingerprintDep = Annotated[ClientFingerprint, Depends(get_fingerprint)]
 
 
 # --- authentication ------------------------------------------------------------------------

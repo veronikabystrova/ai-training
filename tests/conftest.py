@@ -14,7 +14,7 @@ from testcontainers.redis import RedisContainer
 
 from tests.fakes import FakeClock, FakeEmailSender, FakeObjectStorage
 
-pytest_plugins = ["tests.factories"]
+pytest_plugins = ["tests.factories", "tests.app_fixtures"]
 
 
 @pytest.fixture(scope="session")
