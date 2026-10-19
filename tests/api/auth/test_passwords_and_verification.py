@@ -2,6 +2,7 @@ from collections.abc import Awaitable, Callable
 from datetime import timedelta
 
 import pytest
+import structlog.testing
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -380,3 +381,101 @@ async def test_public_confirm_routes_share_the_default_ip_limit(client: AsyncCli
         assert (await client.post(VERIFY, json=body)).status_code == 400
     r = await client.post(VERIFY, json=body)
     assert r.status_code == 429
+
+
+# --- review fixes (Phase D) ----------------------------------------------------------------
+
+CONTEXT_PASSWORD = "wojciechowskizygmunt"
+
+
+async def test_reset_request_default_ip_limit_applies_to_distinct_emails(
+    client: AsyncClient,
+) -> None:
+    for i in range(300):
+        r = await client.post(RESET_REQUEST, json={"email": f"user{i}@x.com"})
+        assert r.status_code == 202
+    r = await client.post(RESET_REQUEST, json={"email": "one-more@x.com"})
+    assert r.status_code == 429
+    assert code(r) == "RATE_LIMITED"
+
+
+async def test_reset_request_enqueue_failure_is_logged_and_still_202(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    make_user: MakeUser,
+    jobs: FakeJobQueue,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def boom(name: str, **kwargs: str) -> None:
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(jobs, "enqueue", boom)
+    await make_user(email="u@x.com")
+    with structlog.testing.capture_logs() as logs:
+        r = await client.post(RESET_REQUEST, json={"email": "u@x.com"})
+    assert r.status_code == 202
+    assert [e["job"] for e in logs if e["event"] == "job_enqueue_failed"] == ["send_password_reset"]
+
+
+async def test_resend_enqueue_failure_is_logged_and_still_202(
+    client: AsyncClient,
+    make_user: MakeUser,
+    jobs: FakeJobQueue,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def boom(name: str, **kwargs: str) -> None:
+        raise ConnectionError("redis down")
+
+    user = await make_user(email="u@x.com")
+    user.is_email_verified = False
+    await db_session.flush()
+    access = (await login(client, "u@x.com"))["tokens"]["access_token"]
+    monkeypatch.setattr(jobs, "enqueue", boom)
+    r = await client.post(RESEND, headers=bearer(access))
+    assert r.status_code == 202
+
+
+async def test_reset_confirm_uses_the_token_owners_name_as_password_context(
+    client: AsyncClient, make_user: MakeUser, issue_token: IssueToken
+) -> None:
+    user = await make_user(
+        email="zygmunt.wojciechowski@x.com", first_name="Zygmunt", last_name="Wojciechowski"
+    )
+    token = await issue_token(user, OttPurpose.password_reset)
+    r = await client.post(RESET_CONFIRM, json={"token": token, "new_password": CONTEXT_PASSWORD})
+    assert r.status_code == 422
+    assert code(r) == "WEAK_PASSWORD"
+    # The weak attempt did not burn the token.
+    ok = await client.post(RESET_CONFIRM, json={"token": token, "new_password": STRONG})
+    assert ok.status_code == 204
+
+
+async def test_reset_confirm_context_password_is_fine_for_an_unrelated_user(
+    client: AsyncClient, make_user: MakeUser, issue_token: IssueToken
+) -> None:
+    user = await make_user(email="someone@x.com")
+    token = await issue_token(user, OttPurpose.password_reset)
+    r = await client.post(RESET_CONFIRM, json={"token": token, "new_password": CONTEXT_PASSWORD})
+    assert r.status_code == 204
+
+
+async def test_setup_uses_the_token_owners_name_as_password_context(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    make_trainer: MakeTrainer,
+    issue_token: IssueToken,
+) -> None:
+    trainer = await make_trainer(
+        email="zygmunt.wojciechowski@x.com",
+        status=UserStatus.pending,
+        first_name="Zygmunt",
+        last_name="Wojciechowski",
+    )
+    await db_session.flush()
+    token = await issue_token(trainer, OttPurpose.trainer_setup)
+    r = await client.post(SETUP, json={"token": token, "new_password": CONTEXT_PASSWORD})
+    assert r.status_code == 422
+    assert code(r) == "WEAK_PASSWORD"
+    ok = await client.post(SETUP, json={"token": token, "new_password": STRONG})
+    assert ok.status_code == 200

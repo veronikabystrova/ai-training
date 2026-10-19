@@ -26,7 +26,7 @@ class RefreshRequest(BaseModel):
 class LogoutRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    refresh_token: str  # identifies the family; must belong to the caller
+    refresh_token: str = Field(min_length=20, max_length=200)  # family id; must be the caller's
 
 
 class PasswordResetRequest(BaseModel):
@@ -89,10 +89,12 @@ def auth_response(issued: IssuedSession) -> AuthResponse:
 class RegisterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    email: EmailStr = Field(max_length=255)
-    password: Password
-    first_name: str = Field(min_length=1, max_length=100)
-    last_name: str = Field(min_length=1, max_length=100)
+    # Identity fields are required only when a new account is created (the service answers 422
+    # VALIDATION_ERROR); an authenticated redemption may send just ``player_profile_ids``.
+    email: EmailStr | None = Field(default=None, max_length=255)
+    password: Password | None = None
+    first_name: str | None = Field(default=None, min_length=1, max_length=100)
+    last_name: str | None = Field(default=None, min_length=1, max_length=100)
     phone: str | None = Field(default=None, max_length=32)
     timezone: str = Field(default="UTC", max_length=64)
     # Required for a new player account (checked against the link kind and the clock in the

@@ -32,6 +32,8 @@ from sqlalchemy.schema import conv
 
 from app.db.base import Base, IdMixin, TimestampMixin
 
+DISPLAY_NAME_MAX = 120
+
 
 class UserRole(StrEnum):
     super_admin = "super_admin"
@@ -210,7 +212,7 @@ class PlayerProfile(IdMixin, TimestampMixin, Base):
 
     owner_user_id: Mapped[UUID] = mapped_column(_fk("users.id"))
     login_user_id: Mapped[UUID | None] = mapped_column(_fk("users.id"))
-    display_name: Mapped[str] = mapped_column(String(120))
+    display_name: Mapped[str] = mapped_column(String(DISPLAY_NAME_MAX))
     birth_date: Mapped[date]
     gender: Mapped[Gender] = mapped_column(_enum(Gender, "gender"))
     skill_level: Mapped[str | None] = mapped_column(String(50))

@@ -3,6 +3,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+import structlog.testing
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -752,3 +753,125 @@ async def test_login_works_after_registration(
     link = await add_share_link(await make_trainer())
     await client.post(url(link.code), json=body())
     assert (await login(client, "new@x.com", STRONG))["user"]["role"] == "player"
+
+
+# --- review fixes (Phase D) ----------------------------------------------------------------
+
+
+async def test_authenticated_redeem_accepts_a_minimal_body(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    make_trainer: MakeTrainer,
+    make_player: MakePlayer,
+    make_user: MakeUser,
+    add_share_link: AddShareLink,
+    principal_token: PrincipalToken,
+) -> None:
+    owner = await make_user()
+    profile = await make_player(owner=owner)
+    link = await add_share_link(await make_trainer())
+    headers = bearer(principal_token(owner))
+
+    r = await client.post(url(link.code), json={}, headers=headers)
+    assert r.status_code == 200
+    assert len(await _links_of(db_session, profile.id)) == 1
+
+    other = await add_share_link(await make_trainer())
+    r = await client.post(
+        url(other.code), json={"player_profile_ids": [str(profile.id)]}, headers=headers
+    )
+    assert r.status_code == 200
+
+
+@pytest.mark.parametrize("missing", ["email", "password", "first_name", "last_name"])
+async def test_new_account_without_identity_field_is_422_and_consumes_nothing(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    make_trainer: MakeTrainer,
+    add_share_link: AddShareLink,
+    missing: str,
+) -> None:
+    link = await add_share_link(await make_trainer())
+    payload = body()
+    del payload[missing]
+    r = await client.post(url(link.code), json=payload)
+    assert r.status_code == 422
+    assert code(r) == "VALIDATION_ERROR"
+    assert [d["field"] for d in r.json()["error"]["details"]] == [missing]
+    await db_session.refresh(link)
+    assert link.use_count == 0
+
+
+async def test_redeeming_an_already_linked_static_link_does_not_use_it_up(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    make_trainer: MakeTrainer,
+    make_player: MakePlayer,
+    make_user: MakeUser,
+    add_share_link: AddShareLink,
+    principal_token: PrincipalToken,
+) -> None:
+    owner = await make_user()
+    await make_player(owner=owner)
+    link = await add_share_link(await make_trainer(), max_uses=5)
+    headers = bearer(principal_token(owner))
+    for _ in range(3):
+        assert (await client.post(url(link.code), json={}, headers=headers)).status_code == 200
+    await db_session.refresh(link)
+    assert link.use_count == 1
+    events = (
+        await db_session.execute(
+            select(ShareLinkEvent).where(
+                ShareLinkEvent.share_link_id == link.id, ShareLinkEvent.kind == "registered"
+            )
+        )
+    ).scalars()
+    assert len(list(events)) == 1
+
+
+async def test_reactivated_link_counts_as_a_use(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    make_trainer: MakeTrainer,
+    make_player: MakePlayer,
+    make_user: MakeUser,
+    add_share_link: AddShareLink,
+    principal_token: PrincipalToken,
+) -> None:
+    from app.repositories.trainer_player_link import TrainerPlayerLinkRepository
+
+    owner = await make_user()
+    profile = await make_player(owner=owner)
+    trainer = await make_trainer()
+    link = await add_share_link(trainer)
+    headers = bearer(principal_token(owner))
+    assert (await client.post(url(link.code), json={}, headers=headers)).status_code == 200
+    repo = TrainerPlayerLinkRepository(db_session)
+    assert await repo.deactivate(trainer_id=trainer.id, player_profile_id=profile.id)
+    assert (await client.post(url(link.code), json={}, headers=headers)).status_code == 200
+    await db_session.refresh(link)
+    assert link.use_count == 2
+    assert await repo.has_active_link(trainer_id=trainer.id, player_profile_id=profile.id)
+
+
+async def test_enqueue_failure_after_commit_is_logged_not_500(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    make_trainer: MakeTrainer,
+    add_share_link: AddShareLink,
+    jobs: FakeJobQueue,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def boom(name: str, **kwargs: str) -> None:
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(jobs, "enqueue", boom)
+    link = await add_share_link(await make_trainer())
+    with structlog.testing.capture_logs() as logs:
+        r = await client.post(url(link.code), json=body())
+    assert r.status_code == 201
+    assert await UserRepository(db_session).get_by_email("new@x.com") is not None
+    failed = [e for e in logs if e["event"] == "job_enqueue_failed"]
+    assert {e["job"] for e in failed} == {"send_welcome_email", "send_verification_email"}
+    assert all(e["error_type"] == "ConnectionError" for e in failed)
+    assert "token" not in str(failed)

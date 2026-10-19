@@ -418,6 +418,16 @@ async def test_logout_revokes_the_rotated_successor_too(
     ).status_code == 401
 
 
+@pytest.mark.parametrize("token", ["short", "x" * 201])
+async def test_logout_refresh_token_length_is_bounded(
+    client: AsyncClient, make_user: MakeUser, token: str
+) -> None:
+    await make_user(email="a@x.com")
+    access = (await login(client, "a@x.com"))["tokens"]["access_token"]
+    r = await client.post(LOGOUT, json={"refresh_token": token}, headers=bearer(access))
+    assert r.status_code == 422
+
+
 async def test_logout_requires_authentication(client: AsyncClient) -> None:
     r = await client.post(LOGOUT, json={"refresh_token": "x" * 43})
     assert r.status_code == 401

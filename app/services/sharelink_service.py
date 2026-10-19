@@ -26,9 +26,10 @@ from app.core.errors import (
     UnprocessableError,
     map_integrity_error,
 )
-from app.core.jobs import JobQueue
+from app.core.jobs import JobQueue, enqueue_best_effort
 from app.core.security import ClientFingerprint, PasswordHasher, PasswordPolicyPort
 from app.models.identity import (
+    DISPLAY_NAME_MAX,
     CoachProfile,
     Gender,
     LinkSource,
@@ -53,14 +54,25 @@ from app.services.auth_service import AuthService, IssuedSession
 
 @dataclass(frozen=True, slots=True)
 class RegisterInput:
-    email: str
-    password: str
-    first_name: str
-    last_name: str
+    # Identity fields are required only for a new account (see ``_require_identity``).
+    email: str | None
+    password: str | None
+    first_name: str | None
+    last_name: str | None
     phone: str | None
     timezone: str
     birth_date: date | None
     player_profile_ids: list[UUID] | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Identity:
+    """The identity fields of a new account, all present."""
+
+    email: str
+    password: str
+    first_name: str
+    last_name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,11 +157,14 @@ class ShareLinkService:
     ) -> RegisterResult:
         """Redeem ``code`` for a new account (no caller) or for the authenticated caller."""
         if caller_id is None:
+            identity = self._require_identity(data)
             # Policy and hashing precede the row lock: argon2 must not run under it.
-            self._policy.validate(data.password, [data.email, data.first_name, data.last_name])
-            digest = await self._hasher.hash(data.password)
+            self._policy.validate(
+                identity.password, [identity.email, identity.first_name, identity.last_name]
+            )
+            digest = await self._hasher.hash(identity.password)
             link = await self._lock_valid_link(code)
-            return await self._register_new(link, data, client, digest)
+            return await self._register_new(link, data, identity, client, digest)
 
         link = await self._lock_valid_link(code)
         caller = await self._users.get(caller_id)
@@ -158,6 +173,30 @@ class ShareLinkService:
         return await self._redeem_authenticated(
             link, data, client, caller=caller, caller_is_child=caller_is_child
         )
+
+    @staticmethod
+    def _require_identity(data: RegisterInput) -> _Identity:
+        """A new account needs email, password and both names (422 per missing field)."""
+        if (
+            data.email is None
+            or data.password is None
+            or data.first_name is None
+            or data.last_name is None
+        ):
+            fields = (
+                ("email", data.email),
+                ("password", data.password),
+                ("first_name", data.first_name),
+                ("last_name", data.last_name),
+            )
+            raise UnprocessableError(
+                details=[
+                    {"field": name, "message": "required to create an account"}
+                    for name, value in fields
+                    if value is None
+                ]
+            )
+        return _Identity(data.email, data.password, data.first_name, data.last_name)
 
     # --- link validation -------------------------------------------------------------------
 
@@ -194,24 +233,29 @@ class ShareLinkService:
     # --- new account -----------------------------------------------------------------------
 
     async def _register_new(
-        self, link: ShareLink, data: RegisterInput, client: ClientFingerprint, digest: str
+        self,
+        link: ShareLink,
+        data: RegisterInput,
+        identity: _Identity,
+        client: ClientFingerprint,
+        digest: str,
     ) -> Registered:
         is_coach = link.kind is ShareLinkKind.coach_unique
         if is_coach:
-            self._check_target_email(link, data.email)
+            self._check_target_email(link, identity.email)
         if data.player_profile_ids is not None:
             raise NotFoundError()  # a new account owns no profiles
         birth_date = None if is_coach else self._required_birth_date(data)
 
         user = User(
-            email=data.email,
+            email=identity.email,
             password_hash=digest,
             role=UserRole.coach if is_coach else UserRole.player,
             status=UserStatus.active,
             is_email_verified=False,
             profile=Profile(
-                first_name=data.first_name,
-                last_name=data.last_name,
+                first_name=identity.first_name,
+                last_name=identity.last_name,
                 phone=data.phone,
                 timezone=data.timezone,
             ),
@@ -228,7 +272,7 @@ class ShareLinkService:
             profile = await self._players.add(
                 PlayerProfile(
                     owner_user_id=user.id,
-                    display_name=f"{data.first_name} {data.last_name}"[:120],
+                    display_name=f"{identity.first_name} {identity.last_name}"[:DISPLAY_NAME_MAX],
                     birth_date=birth_date,
                     gender=Gender.undisclosed,
                 )
@@ -250,9 +294,9 @@ class ShareLinkService:
         issued = await self._auth.issue_session(user, client)
         await self._session.commit()
 
-        await self._jobs.enqueue("send_welcome_email", user_id=str(user.id))
-        await self._jobs.enqueue(
-            "send_verification_email", user_id=str(user.id), token=verify_token
+        await enqueue_best_effort(self._jobs, "send_welcome_email", user_id=str(user.id))
+        await enqueue_best_effort(
+            self._jobs, "send_verification_email", user_id=str(user.id), token=verify_token
         )
         return Registered(issued)
 
@@ -298,12 +342,14 @@ class ShareLinkService:
                 raise _wrong_link_kind()
             self._check_target_email(link, caller.email)
             await self._move_coach(caller, link)
+            changed = True
         else:
             if caller.role is not UserRole.player:
                 raise _wrong_link_kind()
-            await self._link_profiles(caller, link, data.player_profile_ids)
+            changed = await self._link_profiles(caller, link, data.player_profile_ids)
 
-        await self._consume_use(link, client)
+        if changed:  # an already active link is a no-op: no use, no event (decision 2026-10-18)
+            await self._consume_use(link, client)
         trainer_id = await self._auth.tenant_of(caller)
         child = await self._auth.is_child(caller)
         await self._session.commit()
@@ -314,7 +360,8 @@ class ShareLinkService:
     async def _notify_parent_blocked(self, child: User, link: ShareLink) -> None:
         profile = await self._players.get_by_login_user(child.id)
         if profile is not None:
-            await self._jobs.enqueue(
+            await enqueue_best_effort(
+                self._jobs,
                 "notify_parent_share_link_blocked",
                 player_profile_id=str(profile.id),
                 share_link_id=str(link.id),
@@ -322,7 +369,8 @@ class ShareLinkService:
 
     async def _link_profiles(
         self, caller: User, link: ShareLink, requested: list[UUID] | None
-    ) -> None:
+    ) -> bool:
+        """Link the targets; True when at least one link was created or reactivated."""
         owned = await self._players.list_by_owner(caller.id)
         if requested is None:
             targets = [p for p in owned if not p.is_dependent]
@@ -333,13 +381,15 @@ class ShareLinkService:
             targets = [by_id[pid] for pid in dict.fromkeys(requested)]
         if not targets:
             raise NotFoundError()
+        changed = False
         for profile in targets:
-            await self._tpl.upsert_active(
+            changed |= await self._tpl.activate(
                 trainer_id=link.trainer_id,
                 player_profile_id=profile.id,
                 source=LinkSource.share_link,
                 share_link_id=link.id,
             )
+        return changed
 
     async def _move_coach(self, caller: User, link: ShareLink) -> None:
         tenure = CoachProfile(

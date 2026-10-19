@@ -112,6 +112,37 @@ class TrainerPlayerLinkRepository:
         link: TrainerPlayerLink = result.scalar_one()
         return link
 
+    async def activate(
+        self,
+        *,
+        trainer_id: UUID,
+        player_profile_id: UUID,
+        source: LinkSource,
+        share_link_id: UUID | None,
+    ) -> bool:
+        """Like ``upsert_active``, but reports whether anything changed.
+
+        True when the link was inserted or reactivated; False when it was already active.
+        """
+        stmt = (
+            insert(TrainerPlayerLink)
+            .values(
+                id=new_id(),
+                trainer_id=trainer_id,
+                player_profile_id=player_profile_id,
+                source=source,
+                share_link_id=share_link_id,
+            )
+            .on_conflict_do_update(
+                constraint="uq_trainer_player_links_trainer_player",
+                set_={"status": LinkStatus.active},
+                where=TrainerPlayerLink.status != LinkStatus.active,
+            )
+            .returning(TrainerPlayerLink.id)
+        )
+        result = await self._s.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
     async def deactivate(self, *, trainer_id: UUID, player_profile_id: UUID) -> bool:
         """Soft remove. Returns False when there is no active link for this tenant."""
         result = await self._s.execute(

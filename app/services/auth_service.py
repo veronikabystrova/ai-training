@@ -15,7 +15,7 @@ from app.core.clock import Clock
 from app.core.config import Settings
 from app.core.errors import BadRequestError, NotFoundError, UnauthorizedError
 from app.core.ids import new_id
-from app.core.jobs import JobQueue
+from app.core.jobs import JobQueue, enqueue_best_effort
 from app.core.ratelimit import RateLimiter, RouteClass
 from app.core.security import (
     ClientFingerprint,
@@ -241,14 +241,27 @@ class AuthService:
             now=self._clock.now(),
         )
         await self._session.commit()
-        await self._jobs.enqueue("send_password_reset", user_id=str(user.id), token=raw)
+        await enqueue_best_effort(
+            self._jobs, "send_password_reset", user_id=str(user.id), token=raw
+        )
+
+    async def _validate_password(
+        self, password: str, token: str, purpose: OttPurpose, now: datetime
+    ) -> None:
+        """Strength check with the token owner's email and names as zxcvbn context.
+
+        The token is only peeked at (not consumed): a weak password leaves it usable, and an
+        unknown token validates without context and then fails as ``TOKEN_INVALID``.
+        """
+        inputs = await self._tokens.peek_user_inputs(raw=token, purpose=purpose, now=now)
+        self._policy.validate(password, inputs)
 
     async def confirm_password_reset(self, *, token: str, new_password: str) -> None:
         # Policy and hashing run before the token is consumed: a weak password leaves the
         # link usable, and the row lock is not held across the argon2 work.
-        self._policy.validate(new_password)
-        digest = await self._hasher.hash(new_password)
         now = self._clock.now()
+        await self._validate_password(new_password, token, OttPurpose.password_reset, now)
+        digest = await self._hasher.hash(new_password)
         consumed = await self._tokens.consume(raw=token, purpose=OttPurpose.password_reset, now=now)
         if consumed is None:
             raise _token_invalid()
@@ -292,16 +305,18 @@ class AuthService:
             now=self._clock.now(),
         )
         await self._session.commit()
-        await self._jobs.enqueue("send_verification_email", user_id=str(user.id), token=raw)
+        await enqueue_best_effort(
+            self._jobs, "send_verification_email", user_id=str(user.id), token=raw
+        )
         return True
 
     async def setup_password(
         self, *, token: str, new_password: str, client: ClientFingerprint
     ) -> IssuedSession:
         """Provisioned trainer: pending -> active in one transaction, then a session."""
-        self._policy.validate(new_password)
-        digest = await self._hasher.hash(new_password)
         now = self._clock.now()
+        await self._validate_password(new_password, token, OttPurpose.trainer_setup, now)
+        digest = await self._hasher.hash(new_password)
         consumed = await self._tokens.consume(raw=token, purpose=OttPurpose.trainer_setup, now=now)
         if consumed is None:
             raise _token_invalid()

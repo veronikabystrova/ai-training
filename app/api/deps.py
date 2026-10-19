@@ -63,7 +63,7 @@ class Principal:
     role: Role
     trainer_id: UUID | None  # trainer: self; coach: active tenure's trainer; else None
     act: UUID | None  # impersonating super_admin's user_id, else None
-    child: bool  # True iff a dependent player_profiles.login_user_id = user_id
+    child: bool  # from the access-token claim (<= 15 min stale); the CHILD_CANNOT_REDEEM gate
     jti: UUID
 
 
@@ -317,24 +317,14 @@ async def optional_principal(
     return await _authenticate(request, session, issuer, clock, token)
 
 
-async def current_principal_any_tenure(
-    request: Request, session: SessionDep, issuer: IssuerDep, clock: ClockDep
-) -> Principal:
-    """``current_principal`` that also accepts a coach without an active tenure.
-
-    Used only on ``POST /auth/register`` (authenticated coach move, decision 2026-10-18).
-    Every other route keeps the 401.
-    """
-    token = _bearer_token(request)
-    if token is None:
-        raise UnauthorizedError()
-    return await _authenticate(request, session, issuer, clock, token, any_tenure=True)
-
-
 async def optional_principal_any_tenure(
     request: Request, session: SessionDep, issuer: IssuerDep, clock: ClockDep
 ) -> Principal | None:
-    """``current_principal_any_tenure``, or ``None`` when there is no ``Authorization``."""
+    """``optional_principal`` that also accepts a coach without an active tenure.
+
+    Used only on ``POST /auth/register`` (public or authenticated redeem, incl. the coach move,
+    decision 2026-10-18). Every other route keeps the 401.
+    """
     token = _bearer_token(request)
     if token is None:
         return None
@@ -342,7 +332,6 @@ async def optional_principal_any_tenure(
 
 
 PrincipalDep = Annotated[Principal, Depends(current_principal)]
-AnyTenurePrincipalDep = Annotated[Principal, Depends(current_principal_any_tenure)]
 OptionalAnyTenurePrincipalDep = Annotated[Principal | None, Depends(optional_principal_any_tenure)]
 OptionalPrincipalDep = Annotated[Principal | None, Depends(optional_principal)]
 

@@ -3,13 +3,13 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.ids import new_id
 from app.core.security import hash_token, new_opaque_token
 from app.db.session import rowcount
-from app.models.identity import OneTimeToken, OttPurpose
+from app.models.identity import OneTimeToken, OttPurpose, Profile, User
 
 
 @dataclass(frozen=True)
@@ -73,6 +73,27 @@ class OneTimeTokenRepository:
             )
         ).first()
         return None if row is None else ConsumedToken(user_id=row.user_id, payload=row.payload)
+
+    async def peek_user_inputs(self, *, raw: str, purpose: OttPurpose, now: datetime) -> list[str]:
+        """Read-only: email and names of a live token's user (password-strength context).
+
+        Empty when the token is unknown, used or expired. Nothing is consumed or locked.
+        """
+        row = (
+            await self._s.execute(
+                select(User.email, Profile.first_name, Profile.last_name)
+                .select_from(OneTimeToken)
+                .join(User, User.id == OneTimeToken.user_id)
+                .outerjoin(Profile, Profile.user_id == User.id)
+                .where(
+                    OneTimeToken.token_hash == hash_token(raw),
+                    OneTimeToken.purpose == purpose,
+                    OneTimeToken.used_at.is_(None),
+                    OneTimeToken.expires_at > now,
+                )
+            )
+        ).first()
+        return [] if row is None else [value for value in row if value]
 
     async def purge(self, *, before: datetime) -> int:
         """Delete tokens that expired before ``before``; returns the number removed."""

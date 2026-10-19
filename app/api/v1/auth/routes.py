@@ -163,6 +163,7 @@ _default_by_ip = Depends(rate_limit(RouteClass.default_principal, by_ip=True))
     status_code=202,
     response_model=StatusResponse,
     summary="Request a password-reset email",
+    dependencies=[_default_by_ip],
     responses=_ERRORS,
 )
 async def password_reset_request(
