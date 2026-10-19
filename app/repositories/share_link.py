@@ -50,6 +50,11 @@ class ShareLinkRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_code(self, code: str) -> ShareLink | None:
+        """Unlocked read for the public preview. Tenancy exception: the code is the capability."""
+        result = await self._s.execute(select(ShareLink).where(ShareLink.code == code))
+        return result.scalar_one_or_none()
+
     async def list_for_trainer(self, *, trainer_id: UUID) -> list[ShareLink]:
         result = await self._s.execute(
             select(ShareLink)

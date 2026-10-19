@@ -3,7 +3,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.identity import Profile, TrainerProfile
+from app.models.identity import Profile, TrainerProfile, User, UserStatus
 
 
 class ProfileRepository:
@@ -35,4 +35,13 @@ class TrainerProfileRepository:
 
     async def get_by_slug(self, slug: str) -> TrainerProfile | None:
         result = await self._s.execute(select(TrainerProfile).where(TrainerProfile.slug == slug))
+        return result.scalar_one_or_none()
+
+    async def get_active_by_slug(self, slug: str) -> TrainerProfile | None:
+        """Public lookup: only a trainer whose account is active (G-15: deactivated is hidden)."""
+        result = await self._s.execute(
+            select(TrainerProfile)
+            .join(User, User.id == TrainerProfile.user_id)
+            .where(TrainerProfile.slug == slug, User.status == UserStatus.active)
+        )
         return result.scalar_one_or_none()

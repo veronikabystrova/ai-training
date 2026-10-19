@@ -66,6 +66,15 @@ class BrandingService:
         await self._session.commit()  # end the read transaction
         return view
 
+    async def get_public(self, slug: str) -> BrandingView:
+        """Public read by slug; an unknown slug and a deactivated trainer are both a 404."""
+        profile = await self._trainers.get_active_by_slug(slug)
+        if profile is None:
+            raise NotFoundError()
+        view = self._view(profile)
+        await self._session.commit()  # end the read transaction
+        return view
+
     async def update(self, trainer_id: UUID, changes: Mapping[str, Any]) -> BrandingView:
         """``changes`` holds only the fields the client sent, keyed by column name."""
         profile = await self._profile(trainer_id)

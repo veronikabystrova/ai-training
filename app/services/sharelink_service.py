@@ -7,7 +7,7 @@ after a write simply raises: the request session is closed, and rolled back, by
 """
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import NoReturn
 from uuid import UUID
 
@@ -27,6 +27,7 @@ from app.core.errors import (
     map_integrity_error,
 )
 from app.core.jobs import JobQueue, enqueue_best_effort
+from app.core.media import MediaUrlBuilder
 from app.core.security import (
     ClientFingerprint,
     PasswordHasher,
@@ -50,6 +51,7 @@ from app.models.identity import (
 from app.repositories.coach_profile import CoachProfileRepository
 from app.repositories.one_time_token import OneTimeTokenRepository
 from app.repositories.player import PlayerProfileRepository
+from app.repositories.profile import ProfileRepository, TrainerProfileRepository
 from app.repositories.share_link import ShareLinkRepository
 from app.repositories.share_link_event import ShareLinkEventRepository
 from app.repositories.trainer_player_link import TrainerPlayerLinkRepository
@@ -117,6 +119,15 @@ def _wrong_link_kind() -> DomainError:
 def _account_exists() -> DomainError:
     return ConflictError(
         "ACCOUNT_EXISTS", "An account with this email exists", [{"next": "login_then_redeem"}]
+    )
+
+
+def _is_usable(link: ShareLink, now: datetime) -> bool:
+    """Active, unexpired and not exhausted (the tenant's own status is checked separately)."""
+    return not (
+        not link.is_active
+        or (link.expires_at is not None and link.expires_at <= now)
+        or (link.max_uses is not None and link.use_count >= link.max_uses)
     )
 
 
@@ -207,13 +218,7 @@ class ShareLinkService:
 
     async def _lock_valid_link(self, code: str) -> ShareLink:
         link = await self._links.lock_by_code(code)
-        now = self._clock.now()
-        if (
-            link is None
-            or not link.is_active
-            or (link.expires_at is not None and link.expires_at <= now)
-            or (link.max_uses is not None and link.use_count >= link.max_uses)
-        ):
+        if link is None or not _is_usable(link, self._clock.now()):
             raise _share_link_invalid()
         trainer = await self._users.get(link.trainer_id)
         if trainer is None or trainer.status is not UserStatus.active:
@@ -499,3 +504,65 @@ class TrainerShareLinkService:
         if link.is_active:
             await self._links.deactivate(share_link_id, trainer_id=trainer_id)
         await self._session.commit()
+
+
+@dataclass(frozen=True, slots=True)
+class SharePreview:
+    trainer_name: str
+    business_name: str
+    logo_url: str | None
+    kind: ShareLinkKind
+    target_email_hint: str | None
+
+
+def email_hint(email: str) -> str:
+    """``sam@example.com`` -> ``s***@example.com``: never the full address."""
+    local, _, domain = email.partition("@")
+    return f"{local[:1]}***@{domain}"
+
+
+class SharePreviewService:
+    """``GET /public/share-links/{code}``: what the join page shows before registration."""
+
+    def __init__(self, *, session: AsyncSession, settings: Settings, clock: Clock) -> None:
+        self._session = session
+        self._clock = clock
+        self._media = MediaUrlBuilder(settings.media_base_url)
+        self._users = UserRepository(session)
+        self._links = ShareLinkRepository(session)
+        self._events = ShareLinkEventRepository(session)
+        self._profiles = ProfileRepository(session)
+        self._trainers = TrainerProfileRepository(session)
+
+    async def preview(self, *, code: str, client: ClientFingerprint) -> SharePreview:
+        """A valid link records an ``opened`` event; every other state is the same 404."""
+        link = await self._links.get_by_code(code)
+        if link is None or not _is_usable(link, self._clock.now()):
+            raise _share_link_invalid()
+        trainer = await self._users.get(link.trainer_id)
+        profile = await self._profiles.get(link.trainer_id)
+        branding = await self._trainers.get(link.trainer_id)
+        if (
+            trainer is None
+            or trainer.status is not UserStatus.active  # G-15: a deactivated tenant is invisible
+            or profile is None
+            or branding is None
+        ):
+            raise _share_link_invalid()
+        await self._events.append(
+            share_link_id=link.id,
+            kind="opened",
+            user_agent_hash=client.user_agent_hash,
+            ip_hash=client.ip_hash,
+        )
+        preview = SharePreview(
+            trainer_name=f"{profile.first_name} {profile.last_name}",
+            business_name=branding.business_name,
+            logo_url=self._media.url(branding.logo_key),
+            kind=link.kind,
+            target_email_hint=email_hint(link.target_email)
+            if link.kind is ShareLinkKind.coach_unique and link.target_email
+            else None,
+        )
+        await self._session.commit()
+        return preview
