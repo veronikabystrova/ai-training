@@ -691,7 +691,9 @@ Body `AdminUpdateUser`. **Response:** `200 AdminUserDetail`. Audit `user.updated
 GDPR erasure: anonymise in place, `status=deleted`, revoke families, delete the user's `one_time_tokens`, erase dependents in the same transaction, write `user_erasures` (hashed email).
 Scope (decision 2026-10-19): the user's own player profile, dependents and child logins are erased (one `user_erasures` row each);
 their trainer links are deactivated and availability windows deleted; an erased trainer's address, website, description
-and logo are nulled; `birth_date` (NOT NULL) is generalised to January 1 of the birth year.
+and logo are nulled; `birth_date` (NOT NULL) is generalised to January 1 of the birth year. Erasing a coach ends its
+active tenure (`is_active=false`, `ended_at=now`), so it is a former coach everywhere (decision 2026-10-19). Erasing a
+child login scrubs the profile it logs in to (`login_user_id`), not only profiles the user owns.
 `user_erasures.legal_retention_until = erased_at + settings.erasure_retention_years` (default 7; pending legal sign-off).
 **Response:** `204`. **Status Codes:** 204 · 403 · 404 · 409 `ALREADY_ERASED`.
 

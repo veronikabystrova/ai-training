@@ -1,3 +1,113 @@
+# Code Review — TASK-001 Phase F (Tasks 21-24: trainer share links + availability reads, branding + logo, public preview/branding, admin directory/provisioning/lifecycle/erasure/impersonation start)
+
+Scope: `ac2a322..156434c` (`2c4e199`, `6d03ad4`, `cf7b929`, `3b17408`, `156434c`, and the decision commit `8aacab4`).
+Reviewed against plan Task 21-24, `specs/api-designer-spec.md` (Trainer, Public, Admin, §6 permission matrix) and the
+2026-10-19 decisions. These decisions are taken as settled and not re-raised: share-link delete is trainer-only, deactivating a
+`pending` user is 409, `?trainer_id` = the trainer plus its active coaches, `coach_unique` for an assigned coach is 409, the erasure scope,
+the HMAC-shaped logo/avatar keys, and no self-guards (`CANNOT_DEACTIVATE_SELF` / `CANNOT_ERASE_SELF` dropped).
+
+## Summary
+
+Phase F is solid. The layering is right: routes are thin, services own the transaction, and repositories hold the bulk scrubs.
+It follows the spec closely and all gates are green. The role gates match the §6 matrix (`StaffScopeDep` / `TrainerScopeDep`).
+Tenancy is enforced on every trainer route. Erasure locks the user row, so concurrent erasures serialise cleanly.
+The directory batches the coach-tenant lookup, so there is no N+1. Impersonation reuses the `family_id = jti` convention and the refresh path honours it.
+
+There are four issues to fix. (1) A crash: after a coach invitee is erased, the inviting trainer's `GET /trainer/share-links`
+returns 500 every time, because `ShareLinkResponse.target_email` is `EmailStr` and the erasure placeholder `@erased.invalid` fails validation.
+(2) SVG sanitising can be bypassed. The presigned PUT is still valid after confirm, so the trainer can overwrite the sanitised object with the raw SVG.
+(3) Erasing a child login directly leaves its dependent player profile, links and availability intact.
+(4) Erasing a coach leaves its tenure active (this is a spec gap and needs a decision).
+
+Counts: **1 Critical, 3 Major, 5 Minor.**
+
+## Issues Found
+
+### Critical (Must Fix)
+
+- [ ] **[Critical] `GET /trainer/share-links` returns 500 for good once a coach invitee is erased** — `app/api/v1/trainer/schemas.py:34`
+  (`target_email: EmailStr | None`) together with `app/repositories/erasure.py` `scrub_share_link_email`.
+  Erasure rewrites `share_links.target_email` to `deleted-<id>@erased.invalid`. `email-validator` rejects `.invalid` as a
+  special-use domain. Checked in this review: `EmailStr` gives *"The part after the @-sign is a special-use or reserved name"*.
+  `share_link_response()` builds the model, so it raises `ValidationError`, which becomes a 500. The listing returns inactive links unless
+  filtered, so the trainer's whole list breaks, not just one row. The admin schemas already work around this (`StoredEmail`,
+  `app/api/v1/admin/schemas.py:13-15`), but the trainer schema does not.
+  **Fix:** move `StoredEmail` to `app/api/v1/common.py` and use it for `ShareLinkResponse.target_email`. Keep `EmailStr` on the request model.
+  Add a test: create a coach_unique link, erase the invitee, `GET /trainer/share-links` → 200 with the placeholder.
+
+### Major (Should Fix)
+
+- [ ] **[Major / Security] SVG sanitising can be bypassed by reusing the presigned PUT** — `app/services/branding_service.py:98-117`.
+  The presigned URL is valid for `presign_ttl_seconds` (300 s) and signs only the key, `Content-Type` and `Content-Length`.
+  `confirm_logo` sanitises, overwrites **the same key** and persists it. The trainer can then PUT again to that URL with a hostile
+  `image/svg+xml` body padded to the signed length, which replaces the clean copy. The persisted `logo_key` now serves unsanitised SVG
+  from `media_base_url` on the public preview and branding pages. There is also a TOCTOU between `head` → `get` → `put` with the same cause.
+  This defeats G-19 ("never serve what the client uploaded").
+  **Fix:** write the sanitised bytes to a fresh server-only key that was never presigned (for example, issue a second bound key or derive
+  `logos/<id>` server-side), persist that key and delete the uploaded object. Apply the same rule to png/webp if the stored bytes must be final.
+  Add a test: confirm an SVG, re-put hostile bytes at the uploaded key, and assert that the persisted key's object is unchanged.
+
+- [ ] **[Major] Erasing a child login directly leaves its player profile untouched** — `app/services/admin_user_service.py:281-312`
+  (`scrub_owned_profiles(user.id)` matches `owner_user_id` only). A child login's profile has `owner_user_id = parent` and
+  `login_user_id = child`. So `DELETE /admin/users/{child_login_id}` anonymises the `users`/`profiles` rows, but the dependent's
+  `display_name`, `school`, `emergency_contact_*` (the parent's phone), real `birth_date`, active trainer links and availability all
+  survive. The spec scope (decision 2026-10-19) says "the user's own player profile … erased". Only the parent-initiated path is tested
+  (`test_erase_deletes_one_time_tokens_and_erases_dependents`).
+  **Fix:** have the scrub match `owner_user_id == :id OR login_user_id == :id`, and add a test that erases the child login on its own.
+
+- [ ] **[Major / spec gap — needs a decision] Erasing a coach leaves its `coach_profiles` tenure active** — `app/services/admin_user_service.py:281-312`.
+  The erased coach (`status=deleted`, "Deleted User") still appears in the `?trainer_id=` directory, which filters on `CoachProfile.is_active`.
+  It is still returned by `active_trainer_ids` / `get_active_for_user`, and `GET /trainer/coaches/{id}/availability` gives 200 (empty windows)
+  where the spec says a former coach is a 404. The recorded erasure scope does not mention tenures.
+  **Options:** (a) end the tenure in the erasure transaction (`is_active=false`, `ended_at=now`). This matches "former coach" and is recommended.
+  (b) Keep it and filter `status != deleted` in every tenant read. (c) Accept and document it in the spec.
+
+### Minor (Consider)
+
+- [ ] **[Minor] Uploaded logo objects are never deleted** — `branding_service.confirm_logo` (replacing a logo) and
+  `erasure.scrub_trainer_profile` (nulls `logo_key`). The old object stays readable at its public URL. The key is unguessable (64-bit nonce), but
+  URLs that were already shared or cached stay live after a GDPR erasure. Consider a best-effort `storage.delete` job after commit.
+- [ ] **[Minor] `GET /public/share-links/{code}` has no length bound on `code`** — `app/api/v1/public/routes.py:39-41`. Arbitrary strings reach
+  the DB lookup. Add `Path(max_length=…)` matching the `new_opaque_token()` length, so junk is rejected before it touches the DB or the event table.
+- [ ] **[Minor] `_is_usable` uses a double negation** — `app/services/sharelink_service.py:125-131`. `return not (not link.is_active or …)`
+  is harder to read than `link.is_active and not expired and not exhausted`.
+- [ ] **[Minor] Unreachable `UnprocessableError` branch** — `TrainerShareLinkService.create` (`target_email is None` for coach_unique).
+  `CreateShareLink._target_email_iff_coach_unique` already guarantees it. Either drop it or turn it into an `assert` to narrow the type.
+- [ ] **[Minor] `coach_unique` for an email that belongs to a non-coach account (player/trainer/admin) is accepted** — `_ensure_coach_is_free`
+  returns early, so a link is issued that can never be redeemed (`LINK_EMAIL_MISMATCH`/role clash at redeem). The spec only names
+  `COACH_ALREADY_ASSIGNED`, so this is a spec question rather than a defect. Note it and do not add a code without a decision.
+
+### Positive Notes
+
+- The role gates come from one place (`staff_scope` / `trainer_scope`). The tenant id always comes from the principal, never from input,
+  and another tenant's link or player is indistinguishable from a missing one (404).
+- Keyset pagination on `(created_at, id)` with the injected clock is consistent with the directory.
+  The `is_active` filter uses `.is_()` correctly.
+- The public preview returns one undifferentiated 404 for every invalid state, including a deactivated tenant (G-15). It records `opened` with hashed IP/UA only.
+  The email hint never leaks the full address.
+- `issue_bound_key` / `key_is_bound_to` extracts the avatar scheme with purpose separation (a logo key cannot validate as an avatar key),
+  and checks the canonical spelling.
+- Erasure: the row lock gives clean `ALREADY_ERASED` semantics under concurrency. The repository docstring documents the tenancy exception.
+  Bulk scrubs use `synchronize_session=False` deliberately. The ledger stores only a SHA-256 fingerprint. The audit stores only field names, never values.
+  `test_after_erasure_no_plaintext_email_in_any_text_or_jsonb_column` is an excellent guard.
+- Provisioning runs inside a savepoint with constraint-name mapping to `EMAIL_TAKEN`/`SLUG_TAKEN`, and enqueues the invite after commit.
+- Tests are behaviour-named and cover the boundaries: expiry exclusive, the 60-minute impersonation boundary, the rate limit, and XXE/hostile SVG.
+
+## Verification Evidence (DoD Standard tier, run in this review)
+
+| Gate | Command | Result |
+|---|---|---|
+| Tests | `uv run pytest -q -x` | **492 passed**, 3 warnings (testcontainers deprecation), 62 s |
+| Lint | `uv run ruff check .` | All checks passed |
+| Format | `uv run ruff format --check .` | 166 files already formatted |
+| Types | `uv run mypy app tests` | Success: no issues found in 166 source files |
+| Critical repro | `EmailStr` on `deleted-<uuid>@erased.invalid` | `ValidationError: special-use or reserved name` |
+| Test files for change | `tests/api/trainer/test_{share_links,availability_reads,branding}.py`, `tests/api/public/test_public.py`, `tests/api/admin/test_{users,provision,lifecycle,erasure,impersonate}.py`, `tests/services/test_erasure_anonymiser.py`, `tests/core/test_media.py` | present |
+| File naming | `tasks/TASK-001/code-reviewer-findings.md` | skill-prefixed |
+| OWASP | manual | 1 finding (SVG sanitiser bypass, Major above). Authz, tenancy and injection are OK (parameterised SQLAlchemy throughout) |
+
+---
+
 # Code Review — TASK-001 Phase E (Tasks 17-20: `/me`, avatar, email change, availability, dependents, contexts, parent approvals)
 
 Scope: `bf77434..20ba920` (`2389dd9`, `d44c3d5`, `dbd9d05`, `d577a91`, `8aa398a`, `20ba920`, and the doc
