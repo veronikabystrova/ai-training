@@ -1,9 +1,10 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.pagination import decode_cursor, encode_cursor
 from app.db.session import rowcount
 from app.models.identity import ShareLink, ShareLinkKind
 
@@ -24,6 +25,7 @@ class ShareLinkRepository:
         target_email: str | None = None,
         max_uses: int | None = None,
         expires_at: datetime | None = None,
+        created_at: datetime | None = None,
     ) -> ShareLink:
         link = ShareLink(
             code=code,
@@ -34,6 +36,8 @@ class ShareLinkRepository:
             max_uses=max_uses,
             expires_at=expires_at,
         )
+        if created_at is not None:  # the injected clock; otherwise the column default applies
+            link.created_at = created_at
         self._s.add(link)
         await self._s.flush()
         return link
@@ -53,6 +57,35 @@ class ShareLinkRepository:
             .order_by(ShareLink.created_at, ShareLink.id)
         )
         return list(result.scalars())
+
+    async def list_page(
+        self,
+        *,
+        trainer_id: UUID,
+        kind: ShareLinkKind | None = None,
+        is_active: bool | None = None,
+        cursor: str | None = None,
+        limit: int = 50,
+    ) -> tuple[list[ShareLink], str | None]:
+        """One tenant's links, newest first, keyset-paginated on ``(created_at, id)``."""
+        stmt = (
+            select(ShareLink)
+            .where(ShareLink.trainer_id == trainer_id)
+            .order_by(ShareLink.created_at.desc(), ShareLink.id.desc())
+            .limit(limit + 1)
+        )
+        if kind is not None:
+            stmt = stmt.where(ShareLink.kind == kind)
+        if is_active is not None:
+            stmt = stmt.where(ShareLink.is_active.is_(is_active))
+        if cursor is not None:
+            ts, ident = decode_cursor(cursor)
+            stmt = stmt.where(tuple_(ShareLink.created_at, ShareLink.id) < tuple_(ts, ident))
+        rows = list((await self._s.execute(stmt)).scalars())
+        if len(rows) <= limit:
+            return rows, None
+        rows = rows[:limit]
+        return rows, encode_cursor(rows[-1].created_at, rows[-1].id)
 
     async def lock_by_code(self, code: str) -> ShareLink | None:
         """``SELECT ... FOR UPDATE``. Documented tenancy exception (the code is the capability)."""

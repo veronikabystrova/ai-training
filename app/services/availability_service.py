@@ -20,8 +20,10 @@ from app.core.errors import (
 )
 from app.models.identity import AvailabilityWindow, Profile, SubjectType, UserRole
 from app.repositories.availability import AvailabilityRepository, WindowSpec
+from app.repositories.coach_profile import CoachProfileRepository
 from app.repositories.player import PlayerProfileRepository
 from app.repositories.profile import ProfileRepository
+from app.repositories.trainer_player_link import TrainerPlayerLinkRepository
 
 
 def check_conflict(existing: Sequence[WindowSpec], candidate: WindowSpec) -> bool:
@@ -44,6 +46,15 @@ class AvailabilityView:
 
 
 @dataclass(frozen=True, slots=True)
+class SubjectAvailability:
+    """A trainer's read of one subject (player profile or coach)."""
+
+    subject_id: UUID
+    subject_type: SubjectType
+    view: AvailabilityView
+
+
+@dataclass(frozen=True, slots=True)
 class _Subject:
     subject_type: SubjectType
     subject_id: UUID
@@ -57,6 +68,8 @@ class AvailabilityService:
         self._windows = AvailabilityRepository(session)
         self._profiles = ProfileRepository(session)
         self._players = PlayerProfileRepository(session)
+        self._tpl = TrainerPlayerLinkRepository(session)
+        self._coaches = CoachProfileRepository(session)
 
     async def get_own(self, *, user_id: UUID, role: UserRole, child: bool) -> AvailabilityView:
         subject = await self._own_subject(user_id=user_id, role=role, child=child)
@@ -89,6 +102,36 @@ class AvailabilityService:
             raise NotFoundError()
         subject = _Subject("player", player.id, timezone_user_id=owner_user_id, owner_timezone=True)
         return await self._replace(subject, timezone, windows)
+
+    async def read_player_for_trainer(
+        self, *, trainer_id: UUID, player_profile_id: UUID
+    ) -> SubjectAvailability:
+        """Needs an active link to this tenant (the tenancy exception, architecture section 2).
+
+        Wall-clock times are in the owner's timezone: a dependent has no profile of its own.
+        """
+        if not await self._tpl.has_active_link(
+            trainer_id=trainer_id, player_profile_id=player_profile_id
+        ):
+            raise NotFoundError()
+        player = await self._players.get(player_profile_id)
+        if player is None:
+            raise NotFoundError()
+        subject = _Subject("player", player.id, timezone_user_id=player.owner_user_id)
+        return await self._read(subject)
+
+    async def read_coach_for_trainer(
+        self, *, trainer_id: UUID, coach_user_id: UUID
+    ) -> SubjectAvailability:
+        """Only a coach with an active tenure at this trainer; a former coach is a 404."""
+        if await self._coaches.get_active(trainer_id=trainer_id, user_id=coach_user_id) is None:
+            raise NotFoundError()
+        return await self._read(_Subject("coach", coach_user_id, timezone_user_id=coach_user_id))
+
+    async def _read(self, subject: _Subject) -> SubjectAvailability:
+        view = await self._view(subject)
+        await self._session.commit()  # end the read transaction
+        return SubjectAvailability(subject.subject_id, subject.subject_type, view)
 
     # --- internals -------------------------------------------------------------------------
 

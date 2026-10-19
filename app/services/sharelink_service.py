@@ -7,7 +7,7 @@ after a write simply raises: the request session is closed, and rolled back, by
 """
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import NoReturn
 from uuid import UUID
 
@@ -27,7 +27,12 @@ from app.core.errors import (
     map_integrity_error,
 )
 from app.core.jobs import JobQueue, enqueue_best_effort
-from app.core.security import ClientFingerprint, PasswordHasher, PasswordPolicyPort
+from app.core.security import (
+    ClientFingerprint,
+    PasswordHasher,
+    PasswordPolicyPort,
+    new_opaque_token,
+)
 from app.models.identity import (
     DISPLAY_NAME_MAX,
     CoachProfile,
@@ -404,3 +409,93 @@ class ShareLinkService:
             current = await self._coaches.get_active_for_user(caller.id)
             details = [{"current_trainer_id": str(current.trainer_id)}] if current else []
             raise CoachAlreadyAssignedError(details=details) from exc
+
+
+class TrainerShareLinkService:
+    """A tenant's own share links: create, list, deactivate (``/trainer/share-links``).
+
+    Every method takes the tenant id from the caller's ``TenantScope``; a link of another
+    tenant is indistinguishable from a missing one (404).
+    """
+
+    def __init__(self, *, session: AsyncSession, settings: Settings, clock: Clock) -> None:
+        self._session = session
+        self._settings = settings
+        self._clock = clock
+        self._users = UserRepository(session)
+        self._links = ShareLinkRepository(session)
+        self._coaches = CoachProfileRepository(session)
+
+    async def create(
+        self,
+        *,
+        trainer_id: UUID,
+        creator_id: UUID,
+        role: UserRole,
+        kind: ShareLinkKind,
+        target_email: str | None,
+    ) -> ShareLink:
+        now = self._clock.now()
+        if kind is ShareLinkKind.player_static:
+            link = await self._links.add(
+                trainer_id=trainer_id,
+                created_by_user_id=creator_id,
+                code=new_opaque_token(),
+                kind=kind,
+                created_at=now,
+            )
+        else:
+            if role is not UserRole.trainer:
+                raise ForbiddenError()  # coaches create player links only
+            if target_email is None:
+                raise UnprocessableError(
+                    details=[{"field": "target_email", "message": "required for coach_unique"}]
+                )
+            await self._ensure_coach_is_free(target_email)
+            link = await self._links.add(
+                trainer_id=trainer_id,
+                created_by_user_id=creator_id,
+                code=new_opaque_token(),
+                kind=kind,
+                target_email=target_email,
+                max_uses=1,
+                expires_at=now + timedelta(days=self._settings.coach_link_ttl_days),
+                created_at=now,
+            )
+        await self._session.commit()
+        return link
+
+    async def _ensure_coach_is_free(self, email: str) -> None:
+        """409 when the invitee is already a coach with an active tenure (it would not redeem)."""
+        user = await self._users.get_by_email(email)
+        if user is None or user.role is not UserRole.coach:
+            return
+        tenure = await self._coaches.get_active_for_user(user.id)
+        if tenure is not None:
+            raise CoachAlreadyAssignedError(
+                details=[{"current_trainer_id": str(tenure.trainer_id)}]
+            )
+
+    async def list_page(
+        self,
+        *,
+        trainer_id: UUID,
+        kind: ShareLinkKind | None,
+        is_active: bool | None,
+        cursor: str | None,
+        limit: int,
+    ) -> tuple[list[ShareLink], str | None]:
+        page = await self._links.list_page(
+            trainer_id=trainer_id, kind=kind, is_active=is_active, cursor=cursor, limit=limit
+        )
+        await self._session.commit()  # end the read transaction
+        return page
+
+    async def deactivate(self, *, trainer_id: UUID, share_link_id: UUID) -> None:
+        """Soft delete; an already inactive link is a no-op (204 either way)."""
+        link = await self._links.get(share_link_id, trainer_id=trainer_id)
+        if link is None:
+            raise NotFoundError()
+        if link.is_active:
+            await self._links.deactivate(share_link_id, trainer_id=trainer_id)
+        await self._session.commit()
