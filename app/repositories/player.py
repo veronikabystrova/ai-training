@@ -21,6 +21,28 @@ class PlayerProfileRepository:
     async def get(self, player_profile_id: UUID) -> PlayerProfile | None:
         return await self._s.get(PlayerProfile, player_profile_id)
 
+    async def get_owned(self, *, owner_user_id: UUID, id: UUID) -> PlayerProfile | None:
+        """The profile only when ``owner_user_id`` owns it (another owner's id is None)."""
+        result = await self._s.execute(
+            select(PlayerProfile).where(
+                PlayerProfile.id == id, PlayerProfile.owner_user_id == owner_user_id
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_own(self, owner_user_id: UUID) -> PlayerProfile | None:
+        """The account holder's own (non-dependent) profile."""
+        result = await self._s.execute(
+            select(PlayerProfile)
+            .where(
+                PlayerProfile.owner_user_id == owner_user_id,
+                PlayerProfile.is_dependent.is_(False),
+            )
+            .order_by(PlayerProfile.created_at, PlayerProfile.id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def list_by_owner(self, owner_user_id: UUID) -> list[PlayerProfile]:
         result = await self._s.execute(
             select(PlayerProfile)

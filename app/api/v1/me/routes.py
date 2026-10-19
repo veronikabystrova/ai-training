@@ -1,4 +1,4 @@
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response
 
@@ -6,6 +6,7 @@ from app.api.deps import (
     ClockDep,
     HasherDep,
     JobQueueDep,
+    Principal,
     PrincipalDep,
     SessionDep,
     SettingsDep,
@@ -13,7 +14,9 @@ from app.api.deps import (
     rate_limit,
 )
 from app.api.v1.auth.schemas import StatusResponse
+from app.api.v1.me.deps import ERRORS, by_principal, require_availability_owner
 from app.api.v1.me.schemas import (
+    AvailabilitySet,
     AvatarConfirmRequest,
     AvatarPresignRequest,
     EmailChangeConfirm,
@@ -21,23 +24,20 @@ from app.api.v1.me.schemas import (
     MeResponse,
     PresignResponse,
     UpdateMe,
+    availability_response,
     me_response,
 )
 from app.core.ratelimit import RouteClass
 from app.repositories.audit import AuditRepository
 from app.services.audit_service import DbAuditService
+from app.services.availability_service import AvailabilityService
 from app.services.user_service import UserService
 
 router = APIRouter(prefix="/me", tags=["me"])
 
-_by_principal = Depends(rate_limit(RouteClass.default_principal))
+_by_principal = by_principal
 _by_ip = Depends(rate_limit(RouteClass.default_principal, by_ip=True))
-
-_ERRORS: dict[int | str, dict[str, Any]] = {
-    401: {"description": "Not authenticated"},
-    422: {"description": "Validation error"},
-    429: {"description": "RATE_LIMITED"},
-}
+_ERRORS = ERRORS
 
 
 def get_user_service(
@@ -60,6 +60,14 @@ def get_user_service(
 
 
 UserServiceDep = Annotated[UserService, Depends(get_user_service)]
+
+
+def get_availability_service(session: SessionDep) -> AvailabilityService:
+    return AvailabilityService(session=session)
+
+
+AvailabilityServiceDep = Annotated[AvailabilityService, Depends(get_availability_service)]
+AvailabilityOwnerDep = Annotated[Principal, Depends(require_availability_owner)]
 
 
 @router.get(
@@ -164,3 +172,43 @@ async def request_email_change(
 async def confirm_email_change(payload: EmailChangeConfirm, service: UserServiceDep) -> Response:
     await service.confirm_email_change(token=payload.token)
     return Response(status_code=204)
+
+
+@router.get(
+    "/availability",
+    response_model=AvailabilitySet,
+    summary="Own weekly availability",
+    dependencies=[_by_principal],
+    responses={401: _ERRORS[401], 403: {"description": "Not a player or coach"}},
+)
+async def get_availability(
+    principal: AvailabilityOwnerDep, service: AvailabilityServiceDep
+) -> AvailabilitySet:
+    view = await service.get_own(
+        user_id=principal.user_id, role=principal.role, child=principal.child
+    )
+    return availability_response(view)
+
+
+@router.put(
+    "/availability",
+    response_model=AvailabilitySet,
+    summary="Replace own weekly availability",
+    dependencies=[_by_principal],
+    responses={
+        **_ERRORS,
+        403: {"description": "Not a player or coach"},
+        422: {"description": "OVERLAPPING_WINDOWS or VALIDATION_ERROR"},
+    },
+)
+async def put_availability(
+    payload: AvailabilitySet, principal: AvailabilityOwnerDep, service: AvailabilityServiceDep
+) -> AvailabilitySet:
+    view = await service.replace_own(
+        user_id=principal.user_id,
+        role=principal.role,
+        child=principal.child,
+        timezone=payload.timezone,
+        windows=payload.specs(),
+    )
+    return availability_response(view)

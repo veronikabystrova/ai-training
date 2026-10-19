@@ -1,3 +1,4 @@
+from datetime import time
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
@@ -8,11 +9,14 @@ from pydantic import (
     EmailStr,
     Field,
     HttpUrl,
+    PlainSerializer,
     model_validator,
 )
 
 from app.api.deps import Principal
 from app.api.v1.common import Role, iana_timezone
+from app.repositories.availability import WindowSpec
+from app.services.availability_service import AvailabilityView
 from app.services.user_service import AVATAR_MAX_BYTES, MeView
 
 Timezone = Annotated[str, Field(max_length=64), AfterValidator(iana_timezone)]
@@ -140,3 +144,48 @@ class EmailChangeConfirm(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     token: str = Field(min_length=20, max_length=200)
+
+
+def _minute_precision(value: time) -> time:
+    if value.tzinfo is not None or value.second or value.microsecond:
+        raise ValueError("must be a wall-clock time with minute precision (HH:MM)")
+    return value
+
+
+WallClock = Annotated[
+    time, AfterValidator(_minute_precision), PlainSerializer(lambda t: t.strftime("%H:%M"))
+]
+
+
+class WeeklyWindow(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    weekday: int = Field(ge=0, le=6)  # 0 = Monday
+    start_time: WallClock
+    end_time: WallClock
+
+    @model_validator(mode="after")
+    def _start_before_end(self) -> Self:
+        if self.start_time >= self.end_time:
+            raise ValueError("start_time must be before end_time")
+        return self
+
+
+class AvailabilitySet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timezone: Timezone
+    windows: list[WeeklyWindow] = Field(max_length=70)
+
+    def specs(self) -> list[WindowSpec]:
+        return [
+            WindowSpec(weekday=w.weekday, start_time=w.start_time, end_time=w.end_time)
+            for w in self.windows
+        ]
+
+
+def availability_response(view: AvailabilityView) -> AvailabilitySet:
+    return AvailabilitySet(
+        timezone=view.timezone,
+        windows=[WeeklyWindow.model_validate(w) for w in view.windows],
+    )

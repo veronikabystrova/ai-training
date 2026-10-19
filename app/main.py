@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api.middleware import CorrelationIdMiddleware, ImpersonationMiddleware
 from app.api.v1.admin.routes import router as admin_router
 from app.api.v1.auth.routes import router as auth_router
+from app.api.v1.me.players import router as me_players_router
 from app.api.v1.me.routes import router as me_router
 from app.api.v1.public.routes import router as public_router
 from app.api.v1.trainer.routes import router as trainer_router
@@ -59,7 +60,14 @@ def create_app(settings: Settings | None = None, *, clock: Clock | None = None) 
     app.add_middleware(ImpersonationMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
 
-    for router in (auth_router, me_router, trainer_router, public_router, admin_router):
+    for router in (
+        auth_router,
+        me_router,
+        me_players_router,
+        trainer_router,
+        public_router,
+        admin_router,
+    ):
         app.include_router(router, prefix="/api/v1")
 
     @app.get("/healthz", include_in_schema=False)
