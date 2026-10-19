@@ -1,11 +1,10 @@
 from datetime import date
 from typing import Literal
 from uuid import UUID
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.api.v1.common import AuthResponse, Password, SessionUser, TokenPair
+from app.api.v1.common import AuthResponse, Password, SessionUser, TokenPair, iana_timezone
 from app.models.identity import User
 from app.services.auth_service import IssuedSession, TokenSet
 
@@ -106,11 +105,7 @@ class RegisterRequest(BaseModel):
     @field_validator("timezone")
     @classmethod
     def _iana_timezone(cls, value: str) -> str:
-        try:
-            ZoneInfo(value)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
-            raise ValueError("must be an IANA timezone name") from exc
-        return value
+        return iana_timezone(value)
 
 
 class LinkedResponse(BaseModel):

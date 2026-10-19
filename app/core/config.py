@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     argon2_parallelism: int = 4
     public_base_url: str = "https://app.example.com"
     s3_bucket: str = "app-media"
+    media_base_url: str = "https://media.example.com"  # public origin serving stored keys
+    presign_ttl_seconds: int = 300
 
 
 @lru_cache

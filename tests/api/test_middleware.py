@@ -64,7 +64,6 @@ async def test_impersonated_request_sets_header_and_writes_audit(
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="GET /me arrives in Task 17; remove the marker there")
 async def test_impersonated_me_request_writes_audit(
     client: AsyncClient,
     make_trainer: MakeTrainer,

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import Clock
 from app.core.config import Settings
-from app.core.errors import BadRequestError, NotFoundError, UnauthorizedError
+from app.core.errors import NotFoundError, UnauthorizedError, token_invalid
 from app.core.ids import new_id
 from app.core.jobs import JobQueue, enqueue_best_effort
 from app.core.ratelimit import RateLimiter, RouteClass
@@ -51,11 +51,6 @@ class IssuedSession:
 
 def _invalid_credentials() -> UnauthorizedError:
     return UnauthorizedError("INVALID_CREDENTIALS", "Invalid credentials")
-
-
-def _token_invalid() -> BadRequestError:
-    # One code and message for unknown, expired, used and mismatched tokens: no oracle.
-    return BadRequestError("TOKEN_INVALID", "Token is invalid or expired")
 
 
 def _invalid_refresh() -> UnauthorizedError:
@@ -264,10 +259,10 @@ class AuthService:
         digest = await self._hasher.hash(new_password)
         consumed = await self._tokens.consume(raw=token, purpose=OttPurpose.password_reset, now=now)
         if consumed is None:
-            raise _token_invalid()
+            raise token_invalid()
         user = await self._users.get(consumed.user_id)
         if user is None or user.status is not UserStatus.active:
-            raise _token_invalid()  # the request session rolls the consume back
+            raise token_invalid()  # the request session rolls the consume back
         user.password_hash = digest
         user.must_change_password = False
         await self._refresh_tokens.revoke_all_for_user(user.id, now=now)
@@ -284,10 +279,10 @@ class AuthService:
             raw=token, purpose=OttPurpose.email_verify, now=self._clock.now()
         )
         if consumed is None:
-            raise _token_invalid()
+            raise token_invalid()
         user = await self._users.get(consumed.user_id)
         if user is None or user.status is not UserStatus.active:
-            raise _token_invalid()
+            raise token_invalid()
         user.is_email_verified = True
         await self._session.commit()
 
@@ -319,10 +314,10 @@ class AuthService:
         digest = await self._hasher.hash(new_password)
         consumed = await self._tokens.consume(raw=token, purpose=OttPurpose.trainer_setup, now=now)
         if consumed is None:
-            raise _token_invalid()
+            raise token_invalid()
         user = await self._users.get(consumed.user_id)
         if user is None or user.status is not UserStatus.pending:
-            raise _token_invalid()
+            raise token_invalid()
         user.password_hash = digest
         user.status = UserStatus.active
         user.must_change_password = False

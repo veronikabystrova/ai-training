@@ -40,6 +40,7 @@ from app.core.security import (
     TokenIssuer,
     salted_hash,
 )
+from app.core.storage import ObjectStorage
 from app.db.session import SessionFactory
 from app.models.identity import (
     CoachProfile,
@@ -121,6 +122,11 @@ def get_job_queue(request: Request) -> JobQueue:
     return jobs
 
 
+def get_storage(request: Request) -> ObjectStorage:
+    storage: ObjectStorage = request.app.state.storage
+    return storage
+
+
 def get_fingerprint(
     request: Request, settings: Annotated[Settings, Depends(get_settings_dep)]
 ) -> ClientFingerprint:
@@ -141,6 +147,7 @@ HasherDep = Annotated[PasswordHasher, Depends(get_hasher)]
 FingerprintDep = Annotated[ClientFingerprint, Depends(get_fingerprint)]
 PasswordPolicyDep = Annotated[PasswordPolicyPort, Depends(get_password_policy)]
 JobQueueDep = Annotated[JobQueue, Depends(get_job_queue)]
+StorageDep = Annotated[ObjectStorage, Depends(get_storage)]
 
 
 # --- authentication ------------------------------------------------------------------------

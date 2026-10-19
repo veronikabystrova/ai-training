@@ -2,15 +2,25 @@
 
 from typing import Annotated, Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.models.identity import UserRole as Role
 
-__all__ = ["AuthResponse", "Password", "Role", "SessionUser", "TokenPair"]
+__all__ = ["AuthResponse", "Password", "Role", "SessionUser", "TokenPair", "iana_timezone"]
 
 # zxcvbn >= 3 is enforced by ``PasswordPolicy`` (422 WEAK_PASSWORD), not by the schema.
 Password = Annotated[str, Field(min_length=12, max_length=128)]
+
+
+def iana_timezone(value: str) -> str:
+    """Pydantic validator body: the value must be an IANA zone known to ``zoneinfo``."""
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError("must be an IANA timezone name") from exc
+    return value
 
 
 class TokenPair(BaseModel):

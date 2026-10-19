@@ -53,6 +53,7 @@ pythonpath = ["."]
 markers = [
     "gate: merge-gate tests run on every CI run",
     "concurrency: uses committed data and parallel connections",
+    "perf: loose latency smoke checks",
 ]
 
 [dependency-groups]

@@ -32,6 +32,11 @@ class BadRequestError(DomainError):
     status = 400
 
 
+def token_invalid() -> BadRequestError:
+    """One code and message for unknown, expired, used and mismatched one-time tokens."""
+    return BadRequestError("TOKEN_INVALID", "Token is invalid or expired")
+
+
 class UnauthorizedError(DomainError):
     status = 401
     code = "INVALID_TOKEN"
