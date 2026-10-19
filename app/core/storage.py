@@ -1,3 +1,4 @@
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -39,7 +40,18 @@ class S3ObjectStorage:
 
     def __init__(self, bucket: str, client: "S3Client | None" = None) -> None:
         self._bucket = bucket
-        self._client: S3Client = client or boto3.client("s3")
+        self._client_or_none = client
+        self._client_lock = threading.Lock()
+
+    @property
+    def _client(self) -> "S3Client":
+        # Created on first use, inside the worker thread: boto3's credential chain can block for
+        # seconds (EC2 metadata probe) and must not run at app construction.
+        if self._client_or_none is None:
+            with self._client_lock:
+                if self._client_or_none is None:
+                    self._client_or_none = boto3.client("s3")
+        return self._client_or_none
 
     async def presign_put(
         self, key: str, content_type: str, content_length: int, expires_in: int

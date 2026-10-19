@@ -39,3 +39,12 @@ async def test_head_reraises_other_errors(s3: tuple["S3Client", Stubber]) -> Non
     stubber.add_client_error("head_object", service_error_code="500", http_status_code=500)
     with pytest.raises(ClientError):
         await S3ObjectStorage("b", client=client).head("k")
+
+
+def test_client_is_not_created_at_construction(monkeypatch: pytest.MonkeyPatch) -> None:
+    # boto3.client probes credentials (EC2 metadata, ~2 s off AWS); create_app must not pay that.
+    def _fail(*_a: object, **_k: object) -> None:
+        raise AssertionError("boto3.client called at construction")
+
+    monkeypatch.setattr(boto3, "client", _fail)
+    S3ObjectStorage("b")
