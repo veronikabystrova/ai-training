@@ -1,5 +1,5 @@
 import hashlib
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 
 from httpx import AsyncClient
@@ -171,6 +171,8 @@ async def test_erase_deletes_one_time_tokens_and_erases_dependents(
         )
     ]
     assert scrubbed == [None] * 5
+    # birth_date is NOT NULL: generalised to January 1 of the birth year
+    assert (own.birth_date, child.birth_date) == (date(2012, 1, 1), date(2015, 1, 1))
     assert own.is_active is False and child.is_active is False
     links = (await db_session.execute(select(TrainerPlayerLink.status))).scalars().all()
     assert links and all(status is LinkStatus.inactive for status in links)

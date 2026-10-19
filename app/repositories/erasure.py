@@ -2,7 +2,7 @@ from collections.abc import Collection
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import delete, update
+from sqlalchemy import Integer, cast, delete, extract, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.identity import (
@@ -51,7 +51,8 @@ class UserErasureRepository:
     async def scrub_owned_profiles(self, owner_user_id: UUID) -> list[tuple[UUID, UUID | None]]:
         """Anonymise every player profile the user owns (own and dependents) and retire it.
 
-        Returns ``(profile_id, login_user_id)`` for each. ``birth_date`` is NOT NULL and stays.
+        Returns ``(profile_id, login_user_id)`` for each. ``birth_date`` is NOT NULL, so it
+        is generalised to January 1 of the birth year.
         """
         result = await self._s.execute(
             update(PlayerProfile)
@@ -61,6 +62,9 @@ class UserErasureRepository:
                 school=None,
                 skill_level=None,
                 jersey_number=None,
+                birth_date=func.make_date(
+                    cast(extract("year", PlayerProfile.birth_date), Integer), 1, 1
+                ),
                 emergency_contact_name=None,
                 emergency_contact_phone=None,
                 is_active=False,
