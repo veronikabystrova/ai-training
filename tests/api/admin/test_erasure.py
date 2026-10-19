@@ -36,7 +36,7 @@ from tests.factories import (
     MakeUser,
     PrincipalToken,
 )
-from tests.fakes import FakeClock
+from tests.fakes import FakeClock, FakeJobQueue
 
 USERS = "/api/v1/admin/users"
 EMAIL = "victim.person@example.com"
@@ -401,3 +401,44 @@ async def test_trainer_share_link_listing_survives_an_erased_invitee(
     listing = await client.get("/api/v1/trainer/share-links", headers=headers)
     assert listing.status_code == 200, listing.text
     assert listing.json()["items"][0]["target_email"] == f"deleted-{invitee.id}@erased.invalid"
+
+
+async def test_erase_enqueues_deletion_of_avatars_and_trainer_logo_after_commit(
+    client: AsyncClient,
+    admin_token: str,
+    make_trainer: MakeUser,
+    make_dependent: MakeDependent,
+    db_session: AsyncSession,
+    jobs: FakeJobQueue,
+) -> None:
+    trainer = await make_trainer()
+    child = await make_dependent(parent=trainer, with_login=True)
+    assert child.login_user_id is not None
+    trainer_profile = await db_session.get(TrainerProfile, trainer.id)
+    own = await db_session.get(Profile, trainer.id)
+    child_profile = await db_session.get(Profile, child.login_user_id)
+    assert trainer_profile and own and child_profile
+    trainer_profile.logo_key = "logos/trainer-logo"
+    own.avatar_key = "avatars/trainer-avatar"
+    child_profile.avatar_key = "avatars/child-avatar"
+    await db_session.flush()
+
+    r = await client.delete(f"{USERS}/{trainer.id}", headers=bearer(admin_token))
+    assert r.status_code == 204
+    deletions = {j.kwargs["key"] for j in jobs.enqueued if j.name == "delete_storage_object"}
+    assert deletions == {"logos/trainer-logo", "avatars/trainer-avatar", "avatars/child-avatar"}
+
+
+async def test_erase_without_media_or_when_already_erased_enqueues_no_deletions(
+    client: AsyncClient,
+    admin_token: str,
+    make_user: MakeUser,
+    jobs: FakeJobQueue,
+) -> None:
+    victim = await make_user()
+    assert (
+        await client.delete(f"{USERS}/{victim.id}", headers=bearer(admin_token))
+    ).status_code == 204
+    again = await client.delete(f"{USERS}/{victim.id}", headers=bearer(admin_token))
+    assert again.status_code == 409
+    assert [j for j in jobs.enqueued if j.name == "delete_storage_object"] == []

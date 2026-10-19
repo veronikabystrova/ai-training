@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import NotFoundError, UnprocessableError
+from app.core.jobs import DELETE_OBJECT_JOB, JobQueue, enqueue_best_effort
 from app.core.media import MediaUrlBuilder, issue_bound_key, key_is_bound_to
 from app.core.storage import ObjectStorage, PresignedPut
 from app.core.svg import sanitize_svg
@@ -39,11 +40,17 @@ class BrandingView:
 
 class BrandingService:
     def __init__(
-        self, *, session: AsyncSession, settings: Settings, storage: ObjectStorage
+        self,
+        *,
+        session: AsyncSession,
+        settings: Settings,
+        storage: ObjectStorage,
+        jobs: JobQueue,
     ) -> None:
         self._session = session
         self._settings = settings
         self._storage = storage
+        self._jobs = jobs
         self._secret = settings.jwt_secret.get_secret_value().encode()
         self._media = MediaUrlBuilder(settings.media_base_url)
         self._trainers = TrainerProfileRepository(session)
@@ -122,6 +129,9 @@ class BrandingService:
             )
             await self._storage.put(served_key, clean, "image/svg+xml")
         profile = await self._profile(trainer_id)
+        replaced = profile.logo_key
         profile.logo_key = served_key
         await self._session.commit()
+        if replaced is not None and replaced != served_key:
+            await enqueue_best_effort(self._jobs, DELETE_OBJECT_JOB, key=replaced)
         return self._view(profile)

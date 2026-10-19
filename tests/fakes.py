@@ -75,6 +75,9 @@ class FakeObjectStorage:
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         self.objects[key] = (data, content_type)
 
+    async def delete(self, key: str) -> None:
+        self.objects.pop(key, None)
+
 
 class FakeCommitmentChecker:
     """Recording ``CommitmentChecker``. Set ``rsvps`` to block unlinking, ``error`` to fail."""

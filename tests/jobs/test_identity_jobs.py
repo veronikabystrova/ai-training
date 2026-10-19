@@ -364,6 +364,7 @@ async def test_every_job_services_enqueue_is_registered() -> None:
         "notify_parent_approval_request",
         "notify_child_decision",
         "notify_parent_share_link_blocked",
+        "delete_storage_object",
     }
     assert all(f.max_tries == 5 for f in WorkerSettings.functions)
 

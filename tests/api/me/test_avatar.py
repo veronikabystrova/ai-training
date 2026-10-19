@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.identity import Profile
 from tests.api.helpers import bearer
 from tests.factories import MakeUser, PrincipalToken
-from tests.fakes import FakeObjectStorage
+from tests.fakes import FakeJobQueue, FakeObjectStorage
 
 AVATAR = "/api/v1/me/avatar"
 CONFIRM = "/api/v1/me/avatar/confirm"
@@ -150,3 +150,45 @@ async def test_avatar_routes_require_authentication(client: AsyncClient) -> None
     assert (
         await client.post(CONFIRM, json={"avatar_key": f"avatars/{uuid4()}"})
     ).status_code == 401
+
+
+async def test_avatar_replace_enqueues_deletion_of_the_old_object_after_commit(
+    client: AsyncClient,
+    make_user: MakeUser,
+    principal_token: PrincipalToken,
+    storage: FakeObjectStorage,
+    jobs: FakeJobQueue,
+) -> None:
+    headers = bearer(principal_token(await make_user()))
+    first = await issued_key(client, headers)
+    await storage.put(first, b"x", "image/png")
+    assert (
+        await client.post(CONFIRM, json={"avatar_key": first}, headers=headers)
+    ).status_code == 200
+    assert jobs.enqueued == []  # nothing to delete on the first avatar
+
+    second = await issued_key(client, headers)
+    await storage.put(second, b"y", "image/png")
+    assert (
+        await client.post(CONFIRM, json={"avatar_key": second}, headers=headers)
+    ).status_code == 200
+    assert [(j.name, j.kwargs) for j in jobs.enqueued] == [
+        ("delete_storage_object", {"key": first})
+    ]
+
+    # Confirming the same key again must never schedule deleting the live object.
+    jobs.enqueued.clear()
+    assert (
+        await client.post(CONFIRM, json={"avatar_key": second}, headers=headers)
+    ).status_code == 200
+    assert jobs.enqueued == []
+
+
+async def test_avatar_confirm_that_fails_enqueues_nothing(
+    client: AsyncClient, make_user: MakeUser, principal_token: PrincipalToken, jobs: FakeJobQueue
+) -> None:
+    headers = bearer(principal_token(await make_user()))
+    key = await issued_key(client, headers)  # never uploaded: 404
+    r = await client.post(CONFIRM, json={"avatar_key": key}, headers=headers)
+    assert r.status_code == 404
+    assert jobs.enqueued == []

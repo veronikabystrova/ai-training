@@ -48,3 +48,23 @@ def test_client_is_not_created_at_construction(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(boto3, "client", _fail)
     S3ObjectStorage("b")
+
+
+async def test_delete_removes_the_key_and_a_missing_key_is_still_success(
+    s3: tuple["S3Client", Stubber],
+) -> None:
+    client, stubber = s3
+    # S3 answers 204 for a key that does not exist, so a second delete is a no-op success.
+    stubber.add_response("delete_object", {}, {"Bucket": "b", "Key": "k"})
+    stubber.add_response("delete_object", {}, {"Bucket": "b", "Key": "k"})
+    storage = S3ObjectStorage("b", client=client)
+    await storage.delete("k")
+    await storage.delete("k")
+    stubber.assert_no_pending_responses()
+
+
+async def test_delete_reraises_real_errors(s3: tuple["S3Client", Stubber]) -> None:
+    client, stubber = s3
+    stubber.add_client_error("delete_object", service_error_code="500", http_status_code=500)
+    with pytest.raises(ClientError):
+        await S3ObjectStorage("b", client=client).delete("k")

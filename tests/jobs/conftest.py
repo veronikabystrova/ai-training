@@ -10,7 +10,8 @@ from app.core.once import RedisOnceStore
 from app.jobs.identity_jobs import Ctx
 from app.services.maintenance_service import MaintenanceService
 from app.services.notification_service import NotificationService
-from tests.fakes import FakeClock, FakeEmailSender
+from app.services.storage_cleanup_service import StorageCleanupService
+from tests.fakes import FakeClock, FakeEmailSender, FakeObjectStorage
 
 
 @pytest.fixture
@@ -20,6 +21,7 @@ async def ctx(
     email: FakeEmailSender,
     settings: Settings,
     redis_url: str,
+    storage: FakeObjectStorage,
 ) -> AsyncIterator[Ctx]:
     """Worker context over the rolled-back test session, a fake mailer and a real Redis."""
 
@@ -38,5 +40,6 @@ async def ctx(
             once=RedisOnceStore(redis),
         ),
         "maintenance": MaintenanceService(session_factory=shared_session, clock=clock),
+        "storage_cleanup": StorageCleanupService(storage=storage),
     }
     await redis.aclose()

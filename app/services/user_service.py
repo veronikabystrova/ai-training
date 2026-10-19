@@ -27,7 +27,7 @@ from app.core.errors import (
     map_integrity_error,
     token_invalid,
 )
-from app.core.jobs import JobQueue, enqueue_best_effort
+from app.core.jobs import DELETE_OBJECT_JOB, JobQueue, enqueue_best_effort
 from app.core.media import MediaUrlBuilder
 from app.core.security import PasswordHasher
 from app.core.storage import ObjectStorage, PresignedPut
@@ -148,8 +148,11 @@ class UserService:
         profile = await self._profiles.get(user_id)
         if profile is None:
             raise UnauthorizedError()
+        replaced = profile.avatar_key
         profile.avatar_key = key
         await self._session.commit()
+        if replaced is not None and replaced != key:
+            await enqueue_best_effort(self._jobs, DELETE_OBJECT_JOB, key=replaced)
         return await self.get_me(user_id)
 
     # --- email change ----------------------------------------------------------------------

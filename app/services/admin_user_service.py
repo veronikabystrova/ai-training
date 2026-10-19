@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.clock import Clock
 from app.core.config import Settings
 from app.core.errors import ConflictError, NotFoundError, map_integrity_error
-from app.core.jobs import JobQueue, enqueue_best_effort
+from app.core.jobs import DELETE_OBJECT_JOB, JobQueue, enqueue_best_effort
 from app.core.security import PasswordHasher, new_opaque_token
 from app.models.identity import (
     OttPurpose,
@@ -285,7 +285,8 @@ class AdminUserService:
             raise ConflictError("ALREADY_ERASED", "This user has already been erased")
         now = self._clock.now()
         erased_ids = [user.id]
-        await self._erase_account(admin_id, user, now)
+        media_keys: list[str] = []
+        await self._erase_account(admin_id, user, now, media_keys)
 
         owned = await self._erasures.scrub_owned_profiles(user.id)
         profile_ids = [profile_id for profile_id, _ in owned]
@@ -297,12 +298,15 @@ class AdminUserService:
                 continue
             child = await self._users.lock(login_user_id)
             if child is not None and child.status is not UserStatus.deleted:
-                await self._erase_account(admin_id, child, now)
+                await self._erase_account(admin_id, child, now, media_keys)
                 erased_ids.append(child.id)
 
         await self._erasures.delete_one_time_tokens(erased_ids)
         await self._erasures.end_coach_tenures(user.id, now=now)
         if user.role is UserRole.trainer:
+            trainer = await self._trainers.get(user.id)
+            if trainer is not None and trainer.logo_key is not None:
+                media_keys.append(trainer.logo_key)
             await self._erasures.scrub_trainer_profile(user.id)
         await self._audit.record(
             action="user.erased",
@@ -311,9 +315,19 @@ class AdminUserService:
             subject_id=user.id,
         )
         await self._session.commit()
+        for key in media_keys:  # best effort; the rows no longer reference these objects
+            await enqueue_best_effort(self._jobs, DELETE_OBJECT_JOB, key=key)
 
-    async def _erase_account(self, admin_id: UUID, user: User, now: datetime) -> None:
-        """Scrub one account: PII, credentials, sessions, share links, ledger row."""
+    async def _erase_account(
+        self, admin_id: UUID, user: User, now: datetime, media_keys: list[str]
+    ) -> None:
+        """Scrub one account: PII, credentials, sessions, share links, ledger row.
+
+        ``media_keys`` collects the avatar object so the caller can delete it after the commit.
+        """
+        profile = await self._profiles.get(user.id)
+        if profile is not None and profile.avatar_key is not None:
+            media_keys.append(profile.avatar_key)
         original_email = user.email
         placeholder = erased_email(user.id)
         await self._users.anonymise(user.id, email=placeholder, now=now)

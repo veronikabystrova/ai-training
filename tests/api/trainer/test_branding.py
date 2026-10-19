@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.identity import TrainerProfile, UserRole
 from tests.api.helpers import bearer
 from tests.factories import MakeCoach, MakeUser, PrincipalToken
-from tests.fakes import FakeObjectStorage
+from tests.fakes import FakeJobQueue, FakeObjectStorage
 
 BRANDING = "/api/v1/trainer/branding"
 LOGO = f"{BRANDING}/logo"
@@ -274,3 +274,58 @@ async def test_logo_confirm_missing_key_404_coach_403_foreign_key_404(
 
     bad = await client.post(CONFIRM, json={"logo_key": "avatars/" + str(uuid4())}, headers=headers)
     assert (bad.status_code, code(bad)) == (422, "VALIDATION_ERROR")
+
+
+async def test_logo_replace_enqueues_deletion_of_the_old_logo_only(
+    client: AsyncClient,
+    make_trainer: MakeUser,
+    principal_token: PrincipalToken,
+    storage: FakeObjectStorage,
+    db_session: AsyncSession,
+    jobs: FakeJobQueue,
+) -> None:
+    trainer = await make_trainer()
+    headers = bearer(principal_token(trainer))
+    first = await issued_key(client, headers)
+    await storage.put(first, b"\x89PNG....", "image/png")
+    assert (
+        await client.post(CONFIRM, json={"logo_key": first}, headers=headers)
+    ).status_code == 200
+    assert jobs.enqueued == []  # no previous logo
+
+    second = await issued_key(client, headers)
+    await storage.put(second, b"\x89PNG....", "image/png")
+    assert (
+        await client.post(CONFIRM, json={"logo_key": second}, headers=headers)
+    ).status_code == 200
+    assert [(j.name, j.kwargs) for j in jobs.enqueued] == [
+        ("delete_storage_object", {"key": first})
+    ]
+
+    jobs.enqueued.clear()  # re-confirming the live key must not delete it
+    assert (
+        await client.post(CONFIRM, json={"logo_key": second}, headers=headers)
+    ).status_code == 200
+    assert jobs.enqueued == []
+
+
+async def test_logo_replace_with_svg_deletes_the_old_served_key(
+    client: AsyncClient,
+    make_trainer: MakeUser,
+    principal_token: PrincipalToken,
+    storage: FakeObjectStorage,
+    db_session: AsyncSession,
+    jobs: FakeJobQueue,
+) -> None:
+    trainer = await make_trainer()
+    profile = await db_session.get(TrainerProfile, trainer.id)
+    assert profile is not None
+    profile.logo_key = "logos/old-served"
+    await db_session.flush()
+    headers = bearer(principal_token(trainer))
+    key = await issued_key(client, headers, "image/svg+xml")
+    await storage.put(key, CLEAN_SVG, "image/svg+xml")
+    assert (await client.post(CONFIRM, json={"logo_key": key}, headers=headers)).status_code == 200
+    assert [(j.name, j.kwargs) for j in jobs.enqueued] == [
+        ("delete_storage_object", {"key": "logos/old-served"})
+    ]

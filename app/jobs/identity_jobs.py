@@ -9,6 +9,7 @@ from uuid import UUID
 
 from app.services.maintenance_service import MaintenanceService
 from app.services.notification_service import NotificationService
+from app.services.storage_cleanup_service import StorageCleanupService
 
 Ctx = dict[str, Any]
 
@@ -20,6 +21,11 @@ def _notifications(ctx: Ctx) -> NotificationService:
 
 def _maintenance(ctx: Ctx) -> MaintenanceService:
     service: MaintenanceService = ctx["maintenance"]
+    return service
+
+
+def _storage_cleanup(ctx: Ctx) -> StorageCleanupService:
+    service: StorageCleanupService = ctx["storage_cleanup"]
     return service
 
 
@@ -50,7 +56,7 @@ async def notify_parent_approval_request(ctx: Ctx, *, approval_id: str) -> None:
 
 
 async def notify_child_decision(ctx: Ctx, *, approval_id: str) -> None:
-    """Enqueued by ``ApprovalService`` on deny (spec name: notify_child_decision); the service handles any decided status."""
+    """Enqueued by ``ApprovalService`` on deny; the service handles any decided status."""
     await _notifications(ctx).notify_child_decision(approval_id=UUID(approval_id))
 
 
@@ -72,3 +78,8 @@ async def expire_impersonation_sessions(ctx: Ctx) -> None:
 
 async def purge_expired_tokens(ctx: Ctx) -> None:
     await _maintenance(ctx).purge_expired_tokens()
+
+
+async def delete_storage_object(ctx: Ctx, *, key: str) -> None:
+    """Enqueued after a logo/avatar is replaced or erased; a missing object counts as done."""
+    await _storage_cleanup(ctx).delete_object(key=key)

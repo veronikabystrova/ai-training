@@ -34,6 +34,10 @@ class ObjectStorage(Protocol):
 
     async def put(self, key: str, data: bytes, content_type: str) -> None: ...
 
+    async def delete(self, key: str) -> None:
+        """Idempotent: deleting a missing object succeeds."""
+        ...
+
 
 class S3ObjectStorage:
     """boto3 adapter. Blocking calls run in worker threads."""
@@ -99,3 +103,10 @@ class S3ObjectStorage:
             )
 
         await anyio.to_thread.run_sync(_put)
+
+    async def delete(self, key: str) -> None:
+        # S3 answers 204 for a key that does not exist, so no error handling is needed.
+        def _delete() -> None:
+            self._client.delete_object(Bucket=self._bucket, Key=key)
+
+        await anyio.to_thread.run_sync(_delete)

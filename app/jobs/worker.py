@@ -25,11 +25,13 @@ from app.core.config import get_settings
 from app.core.email import LoggingEmailSender
 from app.core.logging import configure_logging
 from app.core.once import RedisOnceStore
+from app.core.storage import S3ObjectStorage
 from app.db.session import create_engine, create_session_factory
 from app.jobs import identity_jobs
 from app.jobs.identity_jobs import Ctx
 from app.services.maintenance_service import MaintenanceService
 from app.services.notification_service import NotificationService
+from app.services.storage_cleanup_service import StorageCleanupService
 
 MAX_TRIES = 5
 
@@ -44,6 +46,7 @@ _EVENT_JOBS: tuple[Job, ...] = (
     identity_jobs.notify_parent_approval_request,
     identity_jobs.notify_child_decision,
     identity_jobs.notify_parent_share_link_blocked,
+    identity_jobs.delete_storage_object,
 )
 
 
@@ -105,6 +108,7 @@ async def startup(ctx: Ctx) -> None:
         once=RedisOnceStore(redis),
     )
     ctx["maintenance"] = MaintenanceService(session_factory=session_factory, clock=clock)
+    ctx["storage_cleanup"] = StorageCleanupService(storage=S3ObjectStorage(settings.s3_bucket))
 
 
 async def shutdown(ctx: Ctx) -> None:

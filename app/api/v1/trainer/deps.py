@@ -6,6 +6,7 @@ from fastapi import Depends
 
 from app.api.deps import (
     ClockDep,
+    JobQueueDep,
     Principal,
     SessionDep,
     SettingsDep,
@@ -73,9 +74,9 @@ AvailabilityServiceDep = Annotated[AvailabilityService, Depends(get_availability
 
 
 def get_branding_service(
-    session: SessionDep, settings: SettingsDep, storage: StorageDep
+    session: SessionDep, settings: SettingsDep, storage: StorageDep, jobs: JobQueueDep
 ) -> BrandingService:
-    return BrandingService(session=session, settings=settings, storage=storage)
+    return BrandingService(session=session, settings=settings, storage=storage, jobs=jobs)
 
 
 BrandingServiceDep = Annotated[BrandingService, Depends(get_branding_service)]

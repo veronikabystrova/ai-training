@@ -8,6 +8,8 @@ from typing import Protocol
 
 import structlog
 
+DELETE_OBJECT_JOB = "delete_storage_object"  # kwargs: key; see StorageCleanupService
+
 
 class JobQueue(Protocol):
     async def enqueue(self, name: str, **kwargs: str) -> None: ...
