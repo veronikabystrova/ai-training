@@ -131,7 +131,7 @@ Authenticated existing user ⇒ link only, body ignored except `player_profile_i
 - 201 / 200 as above
 - 403 `LINK_EMAIL_MISMATCH` (coach link, email differs from `target_email`) · 403 `CHILD_CANNOT_REDEEM` · 403 `EMAIL_NOT_VERIFIED` (authenticated redeem by unverified user)
 - 404 `SHARE_LINK_INVALID` (unknown / inactive / expired / exhausted: one code) · 404 `NOT_FOUND` (profile id not owned)
-- 409 `ACCOUNT_EXISTS` (`details: [{"next": "login_then_redeem"}]`) · 409 `WRONG_LINK_KIND` · 409 `COACH_ALREADY_ASSIGNED` (`details: [{"current_trainer_id": UUID}]`) · 409 `EMAIL_TAKEN`
+- 409 `ACCOUNT_EXISTS` (`details: [{"next": "login_then_redeem"}]`) · 409 `WRONG_LINK_KIND` · 409 `COACH_ALREADY_ASSIGNED` (`details: [{"current_trainer_id": UUID}]`)
 - 422 `VALIDATION_ERROR` / `WEAK_PASSWORD` (empty `player_profile_ids` ⇒ 422)
 - 429
 
@@ -333,6 +333,7 @@ class EmailChangeRequest(BaseModel):
 ```
 
 Issues `email_change` token (24 h) to the **new** address; old email stays active. **Response:** `202 {"status": "accepted"}`.
+**Rate limit:** default (300/min per principal). Password guessing with a stolen access token is an **accepted risk** (user decision 2026-10-19); no dedicated limit.
 **Status Codes:** 202 · 403 `INVALID_CURRENT_PASSWORD` · 409 `EMAIL_TAKEN` (checked again at confirm via `uq_users_email`) · 422 · 429.
 
 ### [TASK-001] POST /me/email-change/confirm (2026-10-18)
