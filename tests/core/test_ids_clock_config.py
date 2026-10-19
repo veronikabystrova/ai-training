@@ -5,7 +5,13 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.clock import SystemClock
-from app.core.config import Settings
+from app.core.config import (
+    CONFIRM_EMAIL_CHANGE_ROUTE,
+    RESET_ROUTE,
+    SETUP_ROUTE,
+    VERIFY_EMAIL_ROUTE,
+    Settings,
+)
 from app.core.ids import new_id
 from tests.fakes import FakeClock
 
@@ -49,3 +55,27 @@ def test_settings_reject_short_secrets_and_hide_them() -> None:
     s = Settings(database_url=db, redis_url=redis, jwt_secret="x" * 32, hash_salt="s" * 16)
     assert "x" * 32 not in repr(s)
     assert s.jwt_secret.get_secret_value() == "x" * 32
+
+
+def test_frontend_url_builds_token_links_from_the_public_base_url() -> None:
+    s = Settings(
+        jwt_secret="x" * 32,
+        hash_salt="s" * 16,
+        database_url="postgresql+asyncpg://u:p@h/db",
+        redis_url="redis://h",
+        public_base_url="https://spa.example.com/",
+    )
+    assert s.frontend_url(SETUP_ROUTE, token="t1") == (
+        "https://spa.example.com/setup-password?token=t1"
+    )
+    assert (
+        SETUP_ROUTE,
+        VERIFY_EMAIL_ROUTE,
+        RESET_ROUTE,
+        CONFIRM_EMAIL_CHANGE_ROUTE,
+    ) == (
+        "/setup-password",
+        "/verify-email",
+        "/reset-password",
+        "/confirm-email-change",
+    )

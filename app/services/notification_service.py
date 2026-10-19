@@ -12,7 +12,13 @@ from uuid import UUID
 import structlog
 
 from app.core.clock import Clock
-from app.core.config import Settings
+from app.core.config import (
+    CONFIRM_EMAIL_CHANGE_ROUTE,
+    RESET_ROUTE,
+    SETUP_ROUTE,
+    VERIFY_EMAIL_ROUTE,
+    Settings,
+)
 from app.core.email import EmailSender
 from app.core.once import OnceStore
 from app.core.security import hash_token
@@ -23,12 +29,11 @@ from app.repositories.one_time_token import OneTimeTokenRepository
 from app.repositories.player import PlayerProfileRepository
 from app.repositories.user import UserRepository
 
-# Frontend routes that consume each token (the SPA owns these paths).
 _TOKEN_PATHS = {
-    OttPurpose.trainer_setup: "/setup-password",
-    OttPurpose.email_verify: "/verify-email",
-    OttPurpose.password_reset: "/reset-password",
-    OttPurpose.email_change: "/confirm-email-change",
+    OttPurpose.trainer_setup: SETUP_ROUTE,
+    OttPurpose.email_verify: VERIFY_EMAIL_ROUTE,
+    OttPurpose.password_reset: RESET_ROUTE,
+    OttPurpose.email_change: CONFIRM_EMAIL_CHANGE_ROUTE,
 }
 
 
@@ -182,8 +187,7 @@ class NotificationService:
         return f"{kind}:{hash_token(token).hex()}"
 
     def _token_context(self, purpose: OttPurpose, token: str) -> dict[str, str]:
-        base = self._settings.public_base_url.rstrip("/")
-        return {"link": f"{base}{_TOKEN_PATHS[purpose]}?token={token}"}
+        return {"link": self._settings.frontend_url(_TOKEN_PATHS[purpose], token=token)}
 
     def _skip(self, job: str) -> bool:
         self._log.info("job.skipped", job=job, reason="state_changed")
