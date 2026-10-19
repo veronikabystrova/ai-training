@@ -1,9 +1,10 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.pagination import decode_cursor, encode_cursor
 from app.models.identity import ApprovalStatus, PurchaseApproval
 
 
@@ -61,6 +62,39 @@ class PurchaseApprovalRepository:
         if status is not None:
             stmt = stmt.where(PurchaseApproval.status == status)
         return list((await self._s.execute(stmt)).scalars())
+
+    async def list_for_parent(
+        self,
+        *,
+        parent_user_id: UUID,
+        trainer_id: UUID,
+        status: ApprovalStatus | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> tuple[list[PurchaseApproval], str | None]:
+        """The parent's approvals under one trainer, newest first (keyset on requested_at, id)."""
+        stmt = (
+            select(PurchaseApproval)
+            .where(
+                PurchaseApproval.parent_user_id == parent_user_id,
+                PurchaseApproval.trainer_id == trainer_id,
+            )
+            .order_by(PurchaseApproval.requested_at.desc(), PurchaseApproval.id.desc())
+            .limit(limit + 1)
+        )
+        if status is not None:
+            stmt = stmt.where(PurchaseApproval.status == status)
+        if cursor is not None:
+            ts, ident = decode_cursor(cursor)
+            stmt = stmt.where(
+                tuple_(PurchaseApproval.requested_at, PurchaseApproval.id) < tuple_(ts, ident)
+            )
+        rows = list((await self._s.execute(stmt)).scalars())
+        if len(rows) <= limit:
+            return rows, None
+        rows = rows[:limit]
+        last = rows[-1]
+        return rows, encode_cursor(last.requested_at, last.id)
 
     async def lock_by_id_for_parent(
         self, approval_id: UUID, *, parent_user_id: UUID

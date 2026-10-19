@@ -8,9 +8,11 @@ from app.api.deps import (
     ClockDep,
     CommitmentCheckerDep,
     HasherDep,
+    JobQueueDep,
     PasswordPolicyDep,
     Principal,
     PrincipalDep,
+    PurchaseExecutorDep,
     Role,
     SessionDep,
     SettingsDep,
@@ -18,6 +20,7 @@ from app.api.deps import (
 )
 from app.core.errors import ForbiddenError
 from app.core.ratelimit import RouteClass
+from app.services.approval_service import ApprovalService
 from app.services.availability_service import AvailabilityService
 from app.services.player_service import PlayerService
 
@@ -87,3 +90,12 @@ def get_player_service(
 
 AvailabilityServiceDep = Annotated[AvailabilityService, Depends(get_availability_service)]
 PlayerServiceDep = Annotated[PlayerService, Depends(get_player_service)]
+
+
+def get_approval_service(
+    session: SessionDep, clock: ClockDep, executor: PurchaseExecutorDep, jobs: JobQueueDep
+) -> ApprovalService:
+    return ApprovalService(session=session, clock=clock, executor=executor, jobs=jobs)
+
+
+ApprovalServiceDep = Annotated[ApprovalService, Depends(get_approval_service)]

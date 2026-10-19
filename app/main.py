@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api.middleware import CorrelationIdMiddleware, ImpersonationMiddleware
 from app.api.v1.admin.routes import router as admin_router
 from app.api.v1.auth.routes import router as auth_router
+from app.api.v1.me.approvals import router as me_approvals_router
 from app.api.v1.me.players import router as me_players_router
 from app.api.v1.me.routes import router as me_router
 from app.api.v1.public.routes import router as public_router
@@ -67,6 +68,7 @@ def create_app(settings: Settings | None = None, *, clock: Clock | None = None) 
         auth_router,
         me_router,
         me_players_router,
+        me_approvals_router,
         trainer_router,
         public_router,
         admin_router,

@@ -19,6 +19,7 @@ from app.models.identity import (
     LinkSource,
     PlayerProfile,
     Profile,
+    PurchaseApproval,
     ShareLink,
     ShareLinkKind,
     SubjectType,
@@ -46,6 +47,7 @@ LinkPlayer = Callable[..., Awaitable[TrainerPlayerLink]]
 AddWindow = Callable[..., Awaitable[AvailabilityWindow]]
 AddShareLink = Callable[..., Awaitable[ShareLink]]
 PrincipalToken = Callable[..., str]
+MakeApproval = Callable[..., Awaitable[PurchaseApproval]]
 
 
 @dataclass(frozen=True)
@@ -172,6 +174,31 @@ def link_player(
         return row
 
     return _link
+
+
+@pytest.fixture
+def make_approval(db_session: AsyncSession, clock: FakeClock) -> MakeApproval:
+    async def _make(
+        *,
+        parent: User,
+        trainer: User,
+        player: PlayerProfile,
+        expires_in: timedelta = timedelta(hours=48),
+    ) -> PurchaseApproval:
+        row = PurchaseApproval(
+            player_profile_id=player.id,
+            parent_user_id=parent.id,
+            trainer_id=trainer.id,
+            subject_type="pack",
+            subject_id=new_id(),
+            amount_cents=1250,
+            expires_at=clock.now() + expires_in,
+        )
+        db_session.add(row)
+        await db_session.flush()
+        return row
+
+    return _make
 
 
 @pytest.fixture

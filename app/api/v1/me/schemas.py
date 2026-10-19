@@ -1,4 +1,5 @@
 from datetime import date, datetime, time
+from decimal import Decimal
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
@@ -15,8 +16,9 @@ from pydantic import (
 
 from app.api.deps import Principal
 from app.api.v1.common import Password, Role, iana_timezone
-from app.models.identity import Gender, LinkSource, LinkStatus
+from app.models.identity import ApprovalStatus, Gender, LinkSource, LinkStatus
 from app.repositories.availability import WindowSpec
+from app.services.approval_service import ApprovalView
 from app.services.availability_service import AvailabilityView
 from app.services.player_service import (
     ContextView,
@@ -331,4 +333,39 @@ def context_response(view: ContextView) -> PlayerContext:
         logo_url=view.logo_url,
         player_profile_ids=view.player_profile_ids,
         linked_at=view.linked_at,
+    )
+
+
+class ApprovalResponse(BaseModel):
+    id: UUID
+    trainer_id: UUID
+    player_profile_id: UUID
+    kind: Literal["purchase"] = "purchase"
+    amount: Decimal
+    currency: Literal["USD", "TOKENS"]
+    description: str
+    status: ApprovalStatus
+    created_at: datetime
+    expires_at: datetime
+    decided_at: datetime | None
+    decision_note: str | None
+
+
+class DenyRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
+def approval_response(view: ApprovalView) -> ApprovalResponse:
+    return ApprovalResponse(
+        id=view.id,
+        trainer_id=view.trainer_id,
+        player_profile_id=view.player_profile_id,
+        amount=view.amount,
+        currency=view.currency,
+        description=view.description,
+        status=view.status,
+        created_at=view.created_at,
+        expires_at=view.expires_at,
+        decided_at=view.decided_at,
+        decision_note=view.decision_note,
     )
