@@ -1,3 +1,160 @@
+# Code Review — TASK-001 Phase D (Tasks 13-16: login/refresh/logout, password reset + verification + setup, register, impersonation exit)
+
+Scope: `63adf49..719e953` (`f0c1a86`, `fcd630e`, `e512e9c`, `ed9cc2a`, `719e953` and the doc commits
+`5beef36`, `f422b6f`). Reviewed against plan Phase D, `specs/api-designer-spec.md` (`/auth/*` sections
+and Conventions), architecture §2 / §5, and the brainstorm login / refresh / coach_unique flows.
+
+## Summary
+
+Phase D is solid. The services own their transactions. Refresh rotation locks the row
+(`FOR UPDATE`), commits the family revoke and its audit row *before* it raises
+`REFRESH_REUSE_DETECTED`, and caps impersonation families at the session's `expires_at` (G-14).
+Share-link redemption locks the link, hashes the password *outside* the lock, and turns duplicate
+emails and second active tenures into flow-specific 409s using savepoints rather than pre-check
+SELECTs. Password policy runs before the token is consumed, so a weak password leaves the link usable.
+Raw tokens never reach logs. The Phase C carry-overs (`hide_parameters`, greenlet coverage,
+`WWW-Authenticate: Bearer`) are fixed. The gate is green: 289 passed, 98% coverage.
+
+There are no Critical issues. There are **2 Major** issues: one rate-limit gap that breaks the spec,
+and one spec contradiction on the authenticated register body. There are **10 Minor** issues.
+
+## Issues Found
+
+### Critical (Must Fix)
+
+- None.
+
+### Major (Should Fix)
+
+- [ ] **[Major] `POST /auth/password-reset/request` has no default per-IP rate limit** —
+  `app/api/v1/auth/routes.py:161-172`.
+  Spec Conventions (line 20) and the architecture `rate_limit` row say that routes without a
+  principal fall back to the default limit keyed by client IP. Every other public auth route has a
+  limit (`login_ip`, `register_ip`, or `_default_by_ip`). This one has only the service-side 5/h
+  *per email*. One client can therefore spray any number of addresses, and each new address issues
+  a token row and enqueues an email job (mail flooding, write amplification, unbounded load).
+  **Fix:** add `dependencies=[_default_by_ip]` to the route, plus a test that the 301st request
+  from one IP within a minute, using distinct emails, returns 429.
+
+- [ ] **[Major] Authenticated redemption requires a body the spec says is ignored** —
+  `app/api/v1/auth/schemas.py:88-100`, `app/api/v1/auth/routes.py:271-296`.
+  The spec says "Authenticated existing user ⇒ link only, body ignored except `player_profile_ids`".
+  Yet `RegisterRequest` requires `email`, `password` (≥ 12 chars), `first_name` and `last_name`. A
+  client that follows the prose and sends `{"player_profile_ids": [...]}` (or `{}`) gets 422.
+  The tests hide this: every authenticated case sends a full dummy body
+  (`tests/api/auth/test_register.py:451,486,505`). The spec itself is inconsistent, so this needs
+  the spec owner's decision, not a unilateral edit. Options:
+  (a) make the identity fields optional in the schema and require them in the service's
+  unauthenticated branch (422 with field details), then update the spec block;
+  (b) keep the schema and change the spec prose to "the full body is required; only
+  `player_profile_ids` is used". Add an authenticated test with a minimal body for whichever
+  option is chosen.
+
+### Minor (Consider)
+
+- [ ] **[Minor] Timing oracle on password-reset request** — `app/services/auth_service.py:231-244`.
+  An unknown or inactive email returns right after one SELECT. An active user adds an UPDATE, an
+  INSERT, a COMMIT and an enqueue. That difference is measurable and undermines the "202 always,
+  no enumeration" contract. **Fix:** enqueue one job keyed on the email and let the worker do the
+  lookup and issue the token. Alternatively, accept and document the residual risk.
+
+- [ ] **[Minor] A benign refresh retry logs the user out** — `app/services/auth_service.py:154-168`.
+  Two tabs refreshing together, or a client retrying after a lost response, look like reuse. The
+  family is revoked, including the winner's successor (`tests/services/test_auth_refresh.py`
+  asserts exactly this). It matches the spec's literal reading, but it is a UX decision.
+  **Fix:** confirm with the spec owner. If unwanted, allow a short grace window (for example
+  10 s after `consumed_at`) that returns 401 `INVALID_REFRESH_TOKEN` without revoking.
+
+- [ ] **[Minor] Spec wording for a rate-limited reset request contradicts the code** —
+  `specs/api-designer-spec.md` §`POST /auth/password-reset/request` says "the limited response is
+  also 202 for unknown emails". The code returns 429 for known and unknown emails alike, which is
+  the oracle-free choice, and it is tested (`test_reset_request_rate_limited_per_lowercased_email`).
+  **Fix:** update the spec sentence to "429 for any email once the per-email limit is hit (no
+  oracle)". Ask the spec owner first.
+
+- [ ] **[Minor] Reset and setup check password strength without user context** —
+  `app/services/auth_service.py:249,302` versus `app/services/sharelink_service.py:149`.
+  Register passes `[email, first_name, last_name]` to zxcvbn. Reset confirm and trainer setup pass
+  nothing, so a password built from the user's own email scores higher there.
+  **Fix:** look up the token's user read-only (no consume) before `validate`, or accept the
+  difference and say so in a comment.
+
+- [ ] **[Minor] `LogoutRequest.refresh_token` has no length bounds** —
+  `app/api/v1/auth/schemas.py:26-29`. `RefreshRequest` bounds the same value (20..200), but logout
+  hashes an unbounded string. **Fix:** `Field(min_length=20, max_length=200)`. This is a spec gap
+  as well, so mirror it in the spec block.
+
+- [ ] **[Minor] `current_principal_any_tenure` / `AnyTenurePrincipalDep` are unused** —
+  `app/api/deps.py:320-331,345` (the only uncovered block in deps). Only the optional variant is
+  wired. **Fix:** either remove the required variant from the code and the architecture §2 table
+  (YAGNI), or cover it with a probe-route test.
+
+- [ ] **[Minor] The camp-submission branch is a silent 404 stub that is not recorded in spec or plan** —
+  `app/services/sharelink_service.py:133-135`, `app/api/v1/auth/routes.py:279-280`.
+  `?camp_submission_id=<uuid>` always returns 404 `NOT_FOUND`. The docstring cites Epic-08, but
+  the plan's "Open points" and the spec do not mention it. **Fix:** add it to the plan's open
+  points. Consider 501 or a distinct code so clients can tell "not built" from "unknown submission".
+
+- [ ] **[Minor] Jobs enqueued after commit can be lost** —
+  `app/services/sharelink_service.py:251-256`, `app/services/auth_service.py:243-244,294-295`.
+  If `enqueue` fails, the client gets a 500 even though the account or token is committed. A
+  register retry then hits `ACCOUNT_EXISTS`, and the user never receives a verification email
+  (resend is the only recovery). Acceptable while `LoggingJobQueue` is the adapter.
+  **Fix:** in Task 25, use an outbox row written in the same transaction, or catch and log enqueue
+  failures after commit instead of returning 500.
+
+- [ ] **[Minor] Re-redeeming a static link consumes a use with no new link** —
+  `app/services/sharelink_service.py:306`. `upsert_active` is idempotent, but `_consume_use`
+  always increments. A player who is already linked can exhaust a `max_uses` static link.
+  **Fix:** have `upsert_active` report whether it inserted or reactivated, and skip the increment
+  and event when nothing changed. Alternatively, document that every redemption counts.
+
+- [ ] **[Minor] Small hygiene items** —
+  (1) `app/api/deps.py:293`: `Principal.child` comes from the token claim, while the dataclass
+  comment (`:66`) says it is DB-derived. It is the only `CHILD_CANNOT_REDEEM` gate, and access
+  tokens last 15 min, so the risk is low; fix the comment, or read it in `_resolve`.
+  (2) `app/services/sharelink_service.py:231`: magic `[:120]`; use the column length.
+  (3) `app/api/v1/auth/routes.py:266`: `EMAIL_TAKEN` is documented but unreachable from register
+  (all duplicates map to `ACCOUNT_EXISTS` / `WRONG_LINK_KIND`), and the spec lists it too.
+  (4) `routes.py:297-303` builds a `JSONResponse` for the 200 branch, while `verify_email_resend`
+  sets `response.status_code`. Pick one pattern.
+
+### Positive Notes
+
+- Reuse detection is correct under concurrency. The row lock serialises the racers, and the revoke
+  and its audit row commit before the raise. A gate test proves one winner, a single audit row,
+  and that the successor dies.
+- Refresh rebuilds claims from the DB (A-03). Impersonation families keep `act`/`jti`, are capped
+  at the session expiry, and are revoked if the session ended or the admin was deactivated. That
+  closes the Phase C "deactivated admin" minor for refresh.
+- Login is oracle-free: it always verifies against a dummy hash, returns one 401 for all five
+  states, upgrades the hash on `needs_rehash`, and lowercases the rate-limit key (citext lookup).
+- The token-first design is applied consistently: policy and argon2 run before `consume`, the lock
+  is never held across hashing, and token failures share one code and message.
+- Share-link redemption uses savepoints to map `uq_users_email` and
+  `uq_coach_one_active_trainer` into `ACCOUNT_EXISTS` / `WRONG_LINK_KIND` /
+  `COACH_ALREADY_ASSIGNED`(with `current_trainer_id`) without pre-check SELECTs (ground rule 5).
+  The 20-way and 200-way concurrency tests prove there is no overshoot and no lost writes.
+- `any_tenure` is narrowly scoped to `/auth/register`, documented in the architecture table, and
+  the G-15 adjustment does not change behaviour for any other route.
+- `LoggingJobQueue` logs only the job name, never kwargs that hold raw tokens. IP and UA are stored
+  only as salted hashes.
+- Route handlers are thin, and every request model has `extra="forbid"`.
+
+## Verification Evidence (DoD Standard tier, run in this review)
+
+| Check | Command | Result |
+|---|---|---|
+| Lint | `uv run ruff check .` | PASS |
+| Format | `uv run ruff format --check .` | PASS (122 files) |
+| Types | `uv run mypy app tests` | PASS (122 files, 0 issues) |
+| Tests | `uv run pytest -q --cov=app` | PASS: 289 passed, 1 xfailed (strict, `/me` until Task 17); 98% total. `auth/routes.py` 100%, `auth_service.py` 99%, `sharelink_service.py` 97%, `impersonation_service.py` 100% |
+| Warnings | pytest summary | 3 testcontainers deprecation warnings only |
+| Naming | `ls tasks/TASK-001` | PASS: all skill-prefixed |
+| Committed | `git status` | PASS: clean before this review file |
+
+---
+
 # Code Review — TASK-001 Phase C (Tasks 11-12: `api/deps.py`, middleware, app factory)
 
 Scope: commit `a7fe73e` (Tasks 11-12), plus `cbe8a28` (gender enum) and `3b18314` (plan sync).

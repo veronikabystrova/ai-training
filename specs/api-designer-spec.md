@@ -106,10 +106,12 @@ Query (exactly one of): `share_code: str` or `camp_submission_id: UUID`. Neither
 
 ```python
 class RegisterRequest(BaseModel):                      # extra="forbid"
-    email: EmailStr = Field(max_length=255)
-    password: Password
-    first_name: str = Field(min_length=1, max_length=100)
-    last_name: str = Field(min_length=1, max_length=100)
+    # email/password/first_name/last_name are required only when a new account is created (missing ⇒ 422
+    # VALIDATION_ERROR); an authenticated redeem may send just `player_profile_ids` (user decision 2026-10-18)
+    email: EmailStr | None = Field(default=None, max_length=255)
+    password: Password | None = None
+    first_name: str | None = Field(default=None, min_length=1, max_length=100)
+    last_name: str | None = Field(default=None, min_length=1, max_length=100)
     phone: str | None = Field(default=None, max_length=32)
     timezone: str = "UTC"
     birth_date: date | None = None                     # required for a new player account (static link), else 422 VALIDATION_ERROR;
@@ -119,7 +121,9 @@ class RegisterRequest(BaseModel):                      # extra="forbid"
 
 Behaviour (flows per design §Key flows): static player link ⇒ new player user + own player profile + `trainer_player_links(source=share_link)`;
 `coach_unique` link ⇒ new coach user + `coach_profiles(is_active=true)` (unauthenticated, new email only; G-12).
-Authenticated existing user ⇒ link only, body ignored except `player_profile_ids`.
+Authenticated existing user ⇒ link only, body ignored except `player_profile_ids`. An already active link is a no-op:
+`use_count` is not incremented and no `registered` event is written (user decision 2026-10-18).
+`camp_submission_id` is a stub until Epic-08 defines how a submission maps to a trainer: it always returns 404 `NOT_FOUND`.
 
 **Response:** `201 AuthResponse` (new account) · `200 {"user": SessionUser, "linked_trainer_id": UUID}` (authenticated existing user).
 
@@ -166,6 +170,9 @@ class RefreshRequest(BaseModel):
 
 **Response:** `200 TokenPair`. Rotation: old token consumed, successor in same family. Token claims are rebuilt from the DB (new coach tenant, deactivation honoured).
 Impersonation families never outlive `impersonation_sessions.expires_at` (G-14).
+Reuse detection is strict, with no grace window (user decision 2026-10-18): any second use of a consumed token revokes the family, including
+two tabs or a retry after a lost response. **Client contract:** send at most one refresh per family at a time (single-flight)
+and share the result across tabs.
 
 **Status Codes:** 200 · 401 `INVALID_REFRESH_TOKEN` (unknown/expired/revoked) · 401 `REFRESH_REUSE_DETECTED` (family revoked, audit row) · 401 `IMPERSONATION_EXPIRED` · 422.
 
@@ -182,7 +189,7 @@ class LogoutRequest(BaseModel):
 
 ### [TASK-001] POST /auth/password-reset/request (2026-10-18)
 
-**Access:** public. **Rate limit:** 5/h per email (the limited response is also 202 for unknown emails to avoid enumeration; the counter is keyed on the lowercased input).
+**Access:** public. **Rate limit:** 5/h per email (counter keyed on the lowercased input) plus the default per client IP. A limited request returns 429 for any email, known or unknown, so the 429 itself reveals nothing.
 
 ```python
 class PasswordResetRequest(BaseModel):

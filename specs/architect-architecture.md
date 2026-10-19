@@ -97,8 +97,7 @@ class TenantScope:
 |---|---|---|---|
 | `get_session` | `SessionDep = Annotated[AsyncSession, Depends(get_session)]` | One `AsyncSession` per request; services open the transaction | — |
 | `current_principal` | `PrincipalDep` | Decode JWT (HS256, `exp`, `typ=access`). Then **one SQL round trip** (see below) re-validates against the DB | 401 `INVALID_TOKEN` / `IMPERSONATION_EXPIRED`; 404 if trainer tenant deactivated (G-15) |
-| `current_principal_any_tenure` | `AnyTenurePrincipalDep` | Same as `current_principal`, but a coach whose tenure is inactive is accepted (`trainer_id=None`) instead of 401. Used **only** on `POST /auth/register` for the authenticated coach move (user decision 2026-10-18) | as `current_principal` otherwise |
-| `optional_principal_any_tenure` | `OptionalAnyTenurePrincipalDep` | `current_principal_any_tenure`, but `None` without an `Authorization` header. Used only on `POST /auth/register` (public or authenticated redeem) | as above if a header is present |
+| `optional_principal_any_tenure` | `OptionalAnyTenurePrincipalDep` | Same as `optional_principal`, but a coach whose tenure is inactive is accepted (`trainer_id=None`) instead of 401. Used **only** on `POST /auth/register` (public or authenticated redeem, incl. the coach move) (user decision 2026-10-18) | as `current_principal` otherwise |
 | `optional_principal` | `OptionalPrincipalDep` | Same, but `None` when no `Authorization` header (public routes that personalise) | as above if a header is present |
 | `require_role(*roles)` | `Depends(require_role(Role.trainer))` → `Principal` | Role gate only, no tenant logic | 403 `FORBIDDEN` |
 | `require_tenant_scope` | `TenantDep` | trainer/coach ⇒ `TenantScope(principal.trainer_id)`. player ⇒ delegates to `player_context`. super_admin ⇒ 403 (must use `SuperAdminScope`) | 403 / 404 |
@@ -233,6 +232,8 @@ All wrapped in `core/` so a replacement touches one module. Versions verified on
   opaque refresh 30 d, rotating, reuse ⇒ family revoked. Refresh and one-time tokens stored only as SHA-256.
 - **AuthZ:** role gates in `deps.py`; object-level checks in services; cross-tenant ⇒ 404. `trainer_id`
   only from `Principal`/`TenantScope`. `/admin/*` requires `SuperAdminScope` and rejects impersonation.
+- **Account enumeration via timing:** `password-reset/request` does more DB work for an active user than for an unknown
+  email. **Accepted risk (user decision 2026-10-18):** mitigated by the per-email and per-IP limits; no constant-work padding.
 - **Impersonation:** never targets a super_admin; ≤ 60 min; refresh bounded by session `expires_at` (G-14); the refresh family is linked to its session by convention
   `refresh_tokens.family_id == impersonation_sessions.jti` (no FK column; user decision 2026-10-18);
   middleware writes an `audit_log` row for every `act`-bearing request and sets `X-Impersonated-By`.
@@ -257,6 +258,8 @@ All wrapped in `core/` so a replacement touches one module. Versions verified on
 - **Indexes:** partial indexes on open tokens/active links; `pg_trgm` for the admin directory (NFR-003).
 - **Caching:** public branding via `Cache-Control: public, max-age=300` only (G-26).
 - **Async work:** all email and expiry work in ARQ jobs with idempotency keys and exponential backoff (5 attempts → dead-letter log).
+  Jobs are enqueued after the commit; an enqueue failure is logged (`job_enqueue_failed`) and the request still succeeds,
+  since the user can re-trigger the email (resend, new reset request) (user decision 2026-10-18). Revisit with a transactional outbox.
 
 #### 7. Key decisions (ADR-style)
 
