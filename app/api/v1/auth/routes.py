@@ -2,8 +2,6 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response
-from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
 
 from app.api.deps import (
     ClockDep,
@@ -256,16 +254,14 @@ def _exactly_one_source(
 @router.post(
     "/register",
     status_code=201,
-    response_model=AuthResponse,
+    response_model=AuthResponse | LinkedResponse,
     summary="Register via ShareLink or camp submission",
     dependencies=[Depends(rate_limit(RouteClass.register_ip))],
     responses={
         200: {"model": LinkedResponse, "description": "Authenticated user linked"},
         403: {"description": "LINK_EMAIL_MISMATCH, CHILD_CANNOT_REDEEM or EMAIL_NOT_VERIFIED"},
         404: {"description": "SHARE_LINK_INVALID or NOT_FOUND"},
-        409: {
-            "description": "ACCOUNT_EXISTS, WRONG_LINK_KIND, COACH_ALREADY_ASSIGNED or EMAIL_TAKEN"
-        },
+        409: {"description": "ACCOUNT_EXISTS, WRONG_LINK_KIND or COACH_ALREADY_ASSIGNED"},
         **_ERRORS,
     },
 )
@@ -275,7 +271,8 @@ async def register(
     principal: OptionalAnyTenurePrincipalDep,
     service: ShareLinkServiceDep,
     client: FingerprintDep,
-) -> AuthResponse | JSONResponse:
+    response: Response,
+) -> AuthResponse | LinkedResponse:
     share_code, _camp_submission_id = source
     if share_code is None:
         await service.register_with_camp_submission()
@@ -297,11 +294,11 @@ async def register(
     )
     if isinstance(result, Registered):
         return auth_response(result.issued)
-    body = LinkedResponse(
+    response.status_code = 200
+    return LinkedResponse(
         user=session_user(result.user, trainer_id=result.trainer_id, child=result.child),
         linked_trainer_id=result.linked_trainer_id,
     )
-    return JSONResponse(jsonable_encoder(body), status_code=200)
 
 
 def get_impersonation_service(session: SessionDep, clock: ClockDep) -> ImpersonationService:
