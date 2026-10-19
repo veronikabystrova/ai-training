@@ -9,6 +9,7 @@ from app.api.deps import (
     Principal,
     SessionDep,
     SettingsDep,
+    StorageDep,
     TenantScope,
     rate_limit,
     require_role,
@@ -17,6 +18,7 @@ from app.core.errors import ForbiddenError
 from app.core.ratelimit import RouteClass
 from app.models.identity import UserRole
 from app.services.availability_service import AvailabilityService
+from app.services.branding_service import BrandingService
 from app.services.sharelink_service import TrainerShareLinkService
 
 by_principal = Depends(rate_limit(RouteClass.default_principal))
@@ -68,3 +70,12 @@ def get_availability_service(session: SessionDep) -> AvailabilityService:
 
 ShareLinkServiceDep = Annotated[TrainerShareLinkService, Depends(get_share_link_service)]
 AvailabilityServiceDep = Annotated[AvailabilityService, Depends(get_availability_service)]
+
+
+def get_branding_service(
+    session: SessionDep, settings: SettingsDep, storage: StorageDep
+) -> BrandingService:
+    return BrandingService(session=session, settings=settings, storage=storage)
+
+
+BrandingServiceDep = Annotated[BrandingService, Depends(get_branding_service)]

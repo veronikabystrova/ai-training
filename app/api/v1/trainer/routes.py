@@ -6,6 +6,7 @@ from app.api.deps import SettingsDep
 from app.api.v1.trainer.deps import (
     ERRORS,
     AvailabilityServiceDep,
+    BrandingServiceDep,
     ShareLinkServiceDep,
     StaffScopeDep,
     TrainerScopeDep,
@@ -13,9 +14,15 @@ from app.api.v1.trainer.deps import (
 )
 from app.api.v1.trainer.schemas import (
     AvailabilityRead,
+    BrandingResponse,
     CreateShareLink,
+    LogoConfirmRequest,
+    LogoPresignRequest,
+    LogoPresignResponse,
     ShareLinkResponse,
+    UpdateBranding,
     availability_read,
+    branding_response,
     share_link_response,
 )
 from app.core.pagination import CursorQ, LimitQ, Page
@@ -122,3 +129,67 @@ async def get_coach_availability(
             trainer_id=scope.trainer_id, coach_user_id=coach_user_id
         )
     )
+
+
+@router.get(
+    "/branding",
+    response_model=BrandingResponse,
+    summary="The tenant's branding",
+    dependencies=[by_principal],
+    responses=ERRORS,
+)
+async def get_branding(scope: StaffScopeDep, service: BrandingServiceDep) -> BrandingResponse:
+    return branding_response(await service.get(scope.trainer_id))
+
+
+@router.patch(
+    "/branding",
+    response_model=BrandingResponse,
+    summary="Update the tenant's branding",
+    dependencies=[by_principal],
+    responses=ERRORS,
+)
+async def patch_branding(
+    payload: UpdateBranding, scope: TrainerScopeDep, service: BrandingServiceDep
+) -> BrandingResponse:
+    return branding_response(await service.update(scope.trainer_id, payload.changes()))
+
+
+@router.post(
+    "/branding/logo",
+    response_model=LogoPresignResponse,
+    summary="Presign a logo upload",
+    dependencies=[by_principal],
+    responses=ERRORS,
+)
+async def presign_logo(
+    payload: LogoPresignRequest, scope: TrainerScopeDep, service: BrandingServiceDep
+) -> LogoPresignResponse:
+    key, presigned = await service.presign_logo(
+        scope.trainer_id, content_type=payload.content_type, content_length=payload.content_length
+    )
+    return LogoPresignResponse.model_validate(
+        {
+            "upload_url": presigned.url,
+            "key": key,
+            "expires_in": presigned.expires_in,
+            "required_headers": presigned.headers,
+        }
+    )
+
+
+@router.post(
+    "/branding/logo/confirm",
+    response_model=BrandingResponse,
+    summary="Confirm an uploaded logo",
+    dependencies=[by_principal],
+    responses={
+        **ERRORS,
+        404: {"description": "Key not issued to this trainer or not found in storage"},
+        422: {"description": "INVALID_LOGO or VALIDATION_ERROR"},
+    },
+)
+async def confirm_logo(
+    payload: LogoConfirmRequest, scope: TrainerScopeDep, service: BrandingServiceDep
+) -> BrandingResponse:
+    return branding_response(await service.confirm_logo(scope.trainer_id, key=payload.logo_key))
