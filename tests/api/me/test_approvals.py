@@ -351,7 +351,7 @@ async def test_deny_records_note_and_enqueues_child_notification(
     assert replay.json() == r.json()
     assert executor.executed == []
     assert [(j.name, j.kwargs) for j in jobs.enqueued] == [
-        ("notify_child_approval_denied", {"approval_id": str(approval.id)})
+        ("notify_child_decision", {"approval_id": str(approval.id)})
     ]
 
 

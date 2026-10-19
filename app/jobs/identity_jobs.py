@@ -49,8 +49,8 @@ async def notify_parent_approval_request(ctx: Ctx, *, approval_id: str) -> None:
     await _notifications(ctx).notify_parent_approval_request(approval_id=UUID(approval_id))
 
 
-async def notify_child_approval_denied(ctx: Ctx, *, approval_id: str) -> None:
-    """Enqueued by ``ApprovalService`` on deny; the service handles any decided status."""
+async def notify_child_decision(ctx: Ctx, *, approval_id: str) -> None:
+    """Enqueued by ``ApprovalService`` on deny (spec name: notify_child_decision); the service handles any decided status."""
     await _notifications(ctx).notify_child_decision(approval_id=UUID(approval_id))
 
 

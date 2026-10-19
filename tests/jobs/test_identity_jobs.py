@@ -201,7 +201,7 @@ async def test_notify_child_decision_tells_the_child_login_once_per_status(
     child = await make_dependent(parent=parent, with_login=True)
     await link_player(trainer, child)
     approval = await make_approval(parent=parent, trainer=trainer, player=child)
-    job = identity_jobs.notify_child_approval_denied
+    job = identity_jobs.notify_child_decision
 
     await job(ctx, approval_id=str(approval.id))  # still pending: nothing to report
     assert email.sent == []
@@ -227,7 +227,7 @@ async def test_notify_child_decision_skips_dependent_without_login(
     await link_player(trainer, child)
     approval = await make_approval(parent=parent, trainer=trainer, player=child)
     approval.status = ApprovalStatus.denied
-    await identity_jobs.notify_child_approval_denied(ctx, approval_id=str(approval.id))
+    await identity_jobs.notify_child_decision(ctx, approval_id=str(approval.id))
     assert email.sent == []
 
 
@@ -362,7 +362,7 @@ async def test_every_job_services_enqueue_is_registered() -> None:
         "send_password_reset",
         "send_email_change",
         "notify_parent_approval_request",
-        "notify_child_approval_denied",
+        "notify_child_decision",
         "notify_parent_share_link_blocked",
     }
     assert all(f.max_tries == 5 for f in WorkerSettings.functions)

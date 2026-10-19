@@ -42,7 +42,7 @@ _EVENT_JOBS: tuple[Job, ...] = (
     identity_jobs.send_password_reset,
     identity_jobs.send_email_change,
     identity_jobs.notify_parent_approval_request,
-    identity_jobs.notify_child_approval_denied,
+    identity_jobs.notify_child_decision,
     identity_jobs.notify_parent_share_link_blocked,
 )
 

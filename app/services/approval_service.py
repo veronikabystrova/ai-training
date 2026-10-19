@@ -24,7 +24,7 @@ from app.repositories.trainer_player_link import TrainerPlayerLinkRepository
 from app.services.idempotency_service import IdempotencyGuard
 from app.services.ports import PurchaseExecutor
 
-DENIED_JOB = "notify_child_approval_denied"
+DECISION_JOB = "notify_child_decision"
 
 
 class Decision(StrEnum):
@@ -150,7 +150,7 @@ class ApprovalService:
                 result = await self._apply(parent_user_id, approval_id, decision, note, guard)
         await self._session.commit()
         if decision is Decision.deny and not result.replayed:
-            await enqueue_best_effort(self._jobs, DENIED_JOB, approval_id=str(approval_id))
+            await enqueue_best_effort(self._jobs, DECISION_JOB, approval_id=str(approval_id))
         return result
 
     async def _apply(
