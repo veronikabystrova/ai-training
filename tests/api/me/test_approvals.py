@@ -4,7 +4,13 @@ from uuid import uuid4
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.identity import ApprovalStatus, PlayerProfile, PurchaseApproval, User
+from app.models.identity import (
+    ApprovalStatus,
+    LinkStatus,
+    PlayerProfile,
+    PurchaseApproval,
+    User,
+)
 from tests.api.helpers import bearer
 from tests.factories import (
     LinkPlayer,
@@ -347,3 +353,96 @@ async def test_deny_records_note_and_enqueues_child_notification(
     assert [(j.name, j.kwargs) for j in jobs.enqueued] == [
         ("notify_child_approval_denied", {"approval_id": str(approval.id)})
     ]
+
+
+async def test_approve_404_when_dependent_removed_or_link_ended_deny_still_allowed(
+    client: AsyncClient,
+    executor: FakePurchaseExecutor,
+    make_user: MakeUser,
+    make_dependent: MakeDependent,
+    make_trainer: MakeTrainer,
+    link_player: LinkPlayer,
+    make_approval: MakeApproval,
+    principal_token: PrincipalToken,
+    db_session: AsyncSession,
+) -> None:
+    parent = await make_user()
+    trainer = await make_trainer()
+    removed = await make_dependent(parent=parent)
+    unlinked = await make_dependent(parent=parent)
+    await link_player(trainer, removed)
+    link = await link_player(trainer, unlinked)
+    approval_removed = await make_approval(parent=parent, trainer=trainer, player=removed)
+    approval_unlinked = await make_approval(parent=parent, trainer=trainer, player=unlinked)
+    removed.is_active = False
+    link.status = LinkStatus.inactive
+    await db_session.flush()
+    base = bearer(principal_token(parent))
+
+    for n, approval in enumerate((approval_removed, approval_unlinked)):
+        headers = {**base, "Idempotency-Key": f"k{n}"}
+        r = await client.post(f"{APPROVALS}/{approval.id}/approve", headers=headers)
+        assert (r.status_code, code(r)) == (404, "NOT_FOUND")
+        await db_session.refresh(approval)
+        assert approval.status is ApprovalStatus.pending
+    assert executor.executed == []
+
+    denied = await client.post(
+        f"{APPROVALS}/{approval_removed.id}/deny", json={}, headers={**base, "Idempotency-Key": "d"}
+    )
+    assert (denied.status_code, denied.json()["status"]) == (200, "denied")
+
+
+async def test_deny_without_body_ok_and_unknown_field_422(
+    client: AsyncClient,
+    make_user: MakeUser,
+    make_dependent: MakeDependent,
+    make_trainer: MakeTrainer,
+    link_player: LinkPlayer,
+    make_approval: MakeApproval,
+    principal_token: PrincipalToken,
+) -> None:
+    parent, trainer, child, approval = await setup_pending(
+        make_user, make_dependent, make_trainer, link_player, make_approval
+    )
+    other = await make_approval(parent=parent, trainer=trainer, player=child)
+    base = bearer(principal_token(parent))
+
+    extra = await client.post(
+        f"{APPROVALS}/{approval.id}/deny",
+        json={"note": "x", "extra": 1},
+        headers={**base, "Idempotency-Key": "e"},
+    )
+    assert (extra.status_code, code(extra)) == (422, "VALIDATION_ERROR")
+
+    bare = await client.post(
+        f"{APPROVALS}/{other.id}/deny", headers={**base, "Idempotency-Key": "b"}
+    )
+    assert (bare.status_code, bare.json()["status"], bare.json()["decision_note"]) == (
+        200,
+        "denied",
+        None,
+    )
+
+
+async def test_tokens_approval_reports_token_amount_and_currency(
+    client: AsyncClient,
+    make_user: MakeUser,
+    make_dependent: MakeDependent,
+    make_trainer: MakeTrainer,
+    link_player: LinkPlayer,
+    make_approval: MakeApproval,
+    principal_token: PrincipalToken,
+) -> None:
+    parent = await make_user()
+    trainer = await make_trainer()
+    child = await make_dependent(parent=parent)
+    await link_player(trainer, child)
+    await make_approval(parent=parent, trainer=trainer, player=child, token_amount=40)
+
+    r = await client.get(
+        APPROVALS, params={"trainer_id": str(trainer.id)}, headers=bearer(principal_token(parent))
+    )
+
+    item = r.json()["items"][0]
+    assert (item["currency"], float(item["amount"])) == ("TOKENS", 40.0)

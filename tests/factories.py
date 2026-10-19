@@ -184,6 +184,7 @@ def make_approval(db_session: AsyncSession, clock: FakeClock) -> MakeApproval:
         trainer: User,
         player: PlayerProfile,
         expires_in: timedelta = timedelta(hours=48),
+        token_amount: int | None = None,
     ) -> PurchaseApproval:
         row = PurchaseApproval(
             player_profile_id=player.id,
@@ -191,7 +192,8 @@ def make_approval(db_session: AsyncSession, clock: FakeClock) -> MakeApproval:
             trainer_id=trainer.id,
             subject_type="pack",
             subject_id=new_id(),
-            amount_cents=1250,
+            amount_cents=None if token_amount is not None else 1250,
+            token_amount=token_amount,
             expires_at=clock.now() + expires_in,
         )
         db_session.add(row)

@@ -19,6 +19,8 @@ from app.core.errors import ConflictError, NotFoundError
 from app.core.jobs import JobQueue, enqueue_best_effort
 from app.models.identity import ApprovalStatus, PurchaseApproval
 from app.repositories.approval import PurchaseApprovalRepository
+from app.repositories.player import PlayerProfileRepository
+from app.repositories.trainer_player_link import TrainerPlayerLinkRepository
 from app.services.idempotency_service import IdempotencyGuard
 from app.services.ports import PurchaseExecutor
 
@@ -107,6 +109,8 @@ class ApprovalService:
         self._executor = executor
         self._jobs = jobs
         self._approvals = PurchaseApprovalRepository(session)
+        self._players = PlayerProfileRepository(session)
+        self._links = TrainerPlayerLinkRepository(session)
 
     async def list_approvals(
         self,
@@ -166,6 +170,16 @@ class ApprovalService:
         if approval.status is not ApprovalStatus.pending or approval.expires_at <= now:
             raise ConflictError("APPROVAL_NOT_PENDING", "The approval is no longer pending")
         if decision is Decision.approve:
+            # The dependent may have been removed, or the trainer link ended, since the request.
+            player = await self._players.get(approval.player_profile_id)
+            if (
+                player is None
+                or not player.is_active
+                or not await self._links.has_active_link(
+                    trainer_id=approval.trainer_id, player_profile_id=approval.player_profile_id
+                )
+            ):
+                raise NotFoundError()
             await self._executor.execute(approval)
             approval.status = ApprovalStatus.approved
         else:

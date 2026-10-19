@@ -42,9 +42,7 @@ from app.services.user_service import UserService
 
 router = APIRouter(prefix="/me", tags=["me"])
 
-_by_principal = by_principal
 _by_ip = Depends(rate_limit(RouteClass.default_principal, by_ip=True))
-_ERRORS = ERRORS
 
 
 def get_user_service(
@@ -73,8 +71,8 @@ UserServiceDep = Annotated[UserService, Depends(get_user_service)]
     "",
     response_model=MeResponse,
     summary="Current account",
-    dependencies=[_by_principal],
-    responses={401: _ERRORS[401], 404: {"description": "Trainer tenant deactivated"}},
+    dependencies=[by_principal],
+    responses={401: ERRORS[401], 404: {"description": "Trainer tenant deactivated"}},
 )
 async def get_me(principal: PrincipalDep, service: UserServiceDep) -> MeResponse:
     return me_response(await service.get_me(principal.user_id), principal)
@@ -84,8 +82,8 @@ async def get_me(principal: PrincipalDep, service: UserServiceDep) -> MeResponse
     "",
     response_model=MeResponse,
     summary="Update the current profile",
-    dependencies=[_by_principal],
-    responses={**_ERRORS, 422: {"description": "VALIDATION_ERROR or FIELD_NOT_ALLOWED"}},
+    dependencies=[by_principal],
+    responses={**ERRORS, 422: {"description": "VALIDATION_ERROR or FIELD_NOT_ALLOWED"}},
 )
 async def patch_me(
     payload: UpdateMe, principal: PrincipalDep, service: UserServiceDep
@@ -97,8 +95,8 @@ async def patch_me(
     "/avatar",
     response_model=PresignResponse,
     summary="Presign an avatar upload",
-    dependencies=[_by_principal],
-    responses=_ERRORS,
+    dependencies=[by_principal],
+    responses=ERRORS,
 )
 async def presign_avatar(
     payload: AvatarPresignRequest, principal: PrincipalDep, service: UserServiceDep
@@ -120,9 +118,9 @@ async def presign_avatar(
     "/avatar/confirm",
     response_model=MeResponse,
     summary="Confirm an uploaded avatar",
-    dependencies=[_by_principal],
+    dependencies=[by_principal],
     responses={
-        **_ERRORS,
+        **ERRORS,
         404: {"description": "Key not found in storage"},
         422: {"description": "INVALID_AVATAR or VALIDATION_ERROR"},
     },
@@ -140,9 +138,9 @@ async def confirm_avatar(
     status_code=202,
     response_model=StatusResponse,
     summary="Request an email change",
-    dependencies=[_by_principal],
+    dependencies=[by_principal],
     responses={
-        **_ERRORS,
+        **ERRORS,
         403: {"description": "INVALID_CURRENT_PASSWORD"},
         409: {"description": "EMAIL_TAKEN"},
     },
@@ -164,8 +162,8 @@ async def request_email_change(
     responses={
         400: {"description": "TOKEN_INVALID"},
         409: {"description": "EMAIL_TAKEN"},
-        422: _ERRORS[422],
-        429: _ERRORS[429],
+        422: ERRORS[422],
+        429: ERRORS[429],
     },
 )
 async def confirm_email_change(payload: EmailChangeConfirm, service: UserServiceDep) -> Response:
@@ -177,8 +175,8 @@ async def confirm_email_change(payload: EmailChangeConfirm, service: UserService
     "/availability",
     response_model=AvailabilitySet,
     summary="Own weekly availability",
-    dependencies=[_by_principal],
-    responses={401: _ERRORS[401], 403: {"description": "Not a player or coach"}},
+    dependencies=[by_principal],
+    responses={401: ERRORS[401], 403: {"description": "Not a player or coach"}},
 )
 async def get_availability(
     principal: AvailabilityOwnerDep, service: AvailabilityServiceDep
@@ -193,9 +191,9 @@ async def get_availability(
     "/availability",
     response_model=AvailabilitySet,
     summary="Replace own weekly availability",
-    dependencies=[_by_principal],
+    dependencies=[by_principal],
     responses={
-        **_ERRORS,
+        **ERRORS,
         403: {"description": "Not a player or coach"},
         422: {"description": "OVERLAPPING_WINDOWS or VALIDATION_ERROR"},
     },
@@ -217,8 +215,8 @@ async def put_availability(
     "/contexts",
     response_model=list[PlayerContext],
     summary="Trainer contexts the caller may act in",
-    dependencies=[_by_principal],
-    responses={401: _ERRORS[401], 403: {"description": "Not a parent account"}},
+    dependencies=[by_principal],
+    responses={401: ERRORS[401], 403: {"description": "Not a parent account"}},
 )
 async def get_contexts(principal: ParentDep, service: PlayerServiceDep) -> list[PlayerContext]:
     return [context_response(c) for c in await service.contexts(user_id=principal.user_id)]

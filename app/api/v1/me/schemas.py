@@ -352,6 +352,8 @@ class ApprovalResponse(BaseModel):
 
 
 class DenyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     note: str | None = Field(default=None, max_length=500)
 
 

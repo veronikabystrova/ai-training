@@ -5,10 +5,10 @@ Reads are tenant-bound (``?trainer_id`` is required). Decisions need an ``Idempo
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
 from app.api.deps import IdempotencyDep, PlayerContextDep
-from app.api.v1.me.deps import ERRORS, ApprovalServiceDep, ParentDep, by_principal, require_parent
+from app.api.v1.me.deps import ERRORS, ApprovalServiceDep, ParentDep, by_principal
 from app.api.v1.me.schemas import ApprovalResponse, DenyRequest, approval_response
 from app.core.pagination import CursorQ, LimitQ, Page
 from app.models.identity import ApprovalStatus
@@ -34,7 +34,7 @@ def _respond(result: DecisionResult) -> ApprovalResponse:
     "",
     response_model=Page[ApprovalResponse],
     summary="The caller's dependents' approvals under one trainer",
-    dependencies=[by_principal, Depends(require_parent)],
+    dependencies=[by_principal],
     responses={
         401: ERRORS[401],
         403: {"description": "Not a parent account"},
@@ -92,16 +92,16 @@ async def approve(
 )
 async def deny(
     approval_id: UUID,
-    payload: DenyRequest,
     principal: ParentDep,
     guard: IdempotencyDep,
     service: ApprovalServiceDep,
+    payload: DenyRequest | None = None,
 ) -> ApprovalResponse:
     result = await service.decide(
         parent_user_id=principal.user_id,
         approval_id=approval_id,
         decision=Decision.deny,
-        note=payload.note,
+        note=payload.note if payload else None,
         guard=guard,
     )
     return _respond(result)
