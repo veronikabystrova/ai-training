@@ -12,7 +12,12 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import NotFoundError, UnauthorizedError, map_integrity_error
+from app.core.errors import (
+    NotFoundError,
+    UnauthorizedError,
+    UnprocessableError,
+    map_integrity_error,
+)
 from app.models.identity import AvailabilityWindow, Profile, SubjectType, UserRole
 from app.repositories.availability import AvailabilityRepository, WindowSpec
 from app.repositories.player import PlayerProfileRepository
@@ -43,6 +48,7 @@ class _Subject:
     subject_type: SubjectType
     subject_id: UUID
     timezone_user_id: UUID  # whose ``Profile.timezone`` the wall-clock times are in
+    owner_timezone: bool = False  # a dependent: the owner's zone is fixed, never written here
 
 
 class AvailabilityService:
@@ -81,7 +87,7 @@ class AvailabilityService:
         player = await self._players.get_owned(owner_user_id=owner_user_id, id=player_profile_id)
         if player is None:
             raise NotFoundError()
-        subject = _Subject("player", player.id, timezone_user_id=owner_user_id)
+        subject = _Subject("player", player.id, timezone_user_id=owner_user_id, owner_timezone=True)
         return await self._replace(subject, timezone, windows)
 
     # --- internals -------------------------------------------------------------------------
@@ -97,6 +103,10 @@ class AvailabilityService:
             profile = await self._players.get_own(user_id)
         if profile is None:
             raise NotFoundError()
+        if child:  # a child login has no zone of its own: it reads the owner's
+            return _Subject(
+                "player", profile.id, timezone_user_id=profile.owner_user_id, owner_timezone=True
+            )
         return _Subject("player", profile.id, timezone_user_id=user_id)
 
     async def _profile(self, user_id: UUID) -> Profile:
@@ -116,6 +126,16 @@ class AvailabilityService:
         self, subject: _Subject, timezone: str, windows: list[WindowSpec]
     ) -> AvailabilityView:
         profile = await self._profile(subject.timezone_user_id)
+        if subject.owner_timezone and timezone != profile.timezone:
+            raise UnprocessableError(
+                details=[
+                    {
+                        "field": "timezone",
+                        "message": f"a dependent's availability uses the parent's timezone "
+                        f"({profile.timezone})",
+                    }
+                ]
+            )
         try:
             async with self._session.begin_nested():
                 profile.timezone = timezone
