@@ -1607,6 +1607,8 @@ async def test_public_routes_need_no_token(client) -> None: ...
 
 ### Task 24: Admin directory, provisioning, lifecycle, erasure, impersonation start
 
+> **Decisions (2026-10-19):** erasure generalises `birth_date` to January 1 of the birth year (see spec erase section for full scope); deactivating a `pending` user => 409 `INVALID_STATUS_TRANSITION`; `?trainer_id=` lists the trainer and its active coaches only; `coach_unique` creation for an already-assigned coach => 409 `COACH_ALREADY_ASSIGNED`.
+
 Spec: Admin domain (all routes). Erasure rules: spec `DELETE /admin/users/{id}`, brainstorm Security (Privacy).
 
 **Files:** Create `app/api/v1/admin/{__init__,routes,schemas}.py`, `app/services/erasure.py` (anonymiser); Modify `user_service.py`, `impersonation_service.py`; Test `tests/api/admin/test_users.py`, `test_provision.py`, `test_lifecycle.py`, `test_erasure.py`, `test_impersonate.py`, `tests/services/test_erasure_anonymiser.py`

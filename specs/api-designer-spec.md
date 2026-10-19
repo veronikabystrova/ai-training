@@ -556,7 +556,8 @@ Query: `kind`, `is_active`, `limit`, `cursor`. **Response:** `200 Page[ShareLink
 
 ### [TASK-001] DELETE /trainer/share-links/{id} (2026-10-18)
 
-Deactivates (soft). **Status Codes:** 204 · 404 (other tenant's) · idempotent on an already-inactive link.
+Deactivates (soft). **Trainer only** (coach ⇒ 403, per the §6 matrix; coaches may still create `player_static` links) (decision 2026-10-19).
+**Status Codes:** 204 · 403 · 404 (other tenant's) · idempotent on an already-inactive link.
 
 ### [TASK-001] GET /trainer/players/{id}/availability (2026-10-18)
 
@@ -679,7 +680,7 @@ Body `AdminUpdateUser`. **Response:** `200 AdminUserDetail`. Audit `user.updated
 ### [TASK-001] POST /admin/users/{id}/deactivate (2026-10-18)
 
 `active → inactive`; revokes all refresh families; next access-token use fails (A-03). Deactivated trainer hides its tenant (G-15). Audit.
-**Response:** `200 AdminUserDetail`. **Status Codes:** 200 (idempotent when already inactive) · 403 · 404 · 409 `USER_ERASED`.
+**Response:** `200 AdminUserDetail`. **Status Codes:** 200 (idempotent when already inactive) · 403 · 404 · 409 `USER_ERASED` · 409 `INVALID_STATUS_TRANSITION` (`pending` user; decision 2026-10-19).
 
 ### [TASK-001] POST /admin/users/{id}/reactivate (2026-10-18)
 
@@ -688,6 +689,9 @@ Body `AdminUpdateUser`. **Response:** `200 AdminUserDetail`. Audit `user.updated
 ### [TASK-001] DELETE /admin/users/{id} (2026-10-18)
 
 GDPR erasure: anonymise in place, `status=deleted`, revoke families, delete the user's `one_time_tokens`, erase dependents in the same transaction, write `user_erasures` (hashed email).
+Scope (decision 2026-10-19): the user's own player profile, dependents and child logins are erased (one `user_erasures` row each);
+their trainer links are deactivated and availability windows deleted; an erased trainer's address, website, description
+and logo are nulled; `birth_date` (NOT NULL) is generalised to January 1 of the birth year.
 `user_erasures.legal_retention_until = erased_at + settings.erasure_retention_years` (default 7; pending legal sign-off).
 **Response:** `204`. **Status Codes:** 204 · 403 · 404 · 409 `ALREADY_ERASED`.
 
