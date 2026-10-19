@@ -87,3 +87,35 @@ async def test_payload_roundtrip_and_purge(
     assert consumed is not None and consumed.payload == {"new_email": "n@example.com"}
     assert await repo.purge(before=clock.now() + timedelta(hours=2)) == 1
     assert await repo.purge(before=clock.now() + timedelta(hours=2)) == 0
+
+
+async def test_live_owner_only_for_unused_unexpired(
+    db_session: AsyncSession, make_user: MakeUser, clock: FakeClock
+) -> None:
+    repo = OneTimeTokenRepository(db_session)
+    u = await make_user()
+    raw = await repo.issue(
+        user_id=u.id, purpose=OttPurpose.password_reset, ttl=timedelta(hours=1), now=clock.now()
+    )
+    purpose = OttPurpose.password_reset
+    assert await repo.live_owner(raw=raw, purpose=purpose, now=clock.now()) == u.id
+    assert await repo.live_owner(raw=raw, purpose=OttPurpose.email_verify, now=clock.now()) is None
+    assert await repo.live_owner(raw="nope", purpose=purpose, now=clock.now()) is None
+    later = clock.now() + timedelta(hours=1)
+    assert await repo.live_owner(raw=raw, purpose=purpose, now=later) is None  # expired
+    await repo.consume(raw=raw, purpose=purpose, now=clock.now())
+    assert await repo.live_owner(raw=raw, purpose=purpose, now=clock.now()) is None  # used
+
+
+async def test_purge_removes_tokens_used_before_cutoff(
+    db_session: AsyncSession, make_user: MakeUser, clock: FakeClock
+) -> None:
+    repo = OneTimeTokenRepository(db_session)
+    u = await make_user()
+    raw = await repo.issue(
+        user_id=u.id, purpose=OttPurpose.email_verify, ttl=timedelta(days=30), now=clock.now()
+    )
+    await repo.consume(raw=raw, purpose=OttPurpose.email_verify, now=clock.now())
+    cutoff = clock.now() - timedelta(days=7)
+    assert await repo.purge(before=clock.now(), used_before=cutoff) == 0  # used just now
+    assert await repo.purge(before=clock.now(), used_before=clock.now() + timedelta(seconds=1)) == 1

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.ids import new_id
@@ -95,7 +95,23 @@ class OneTimeTokenRepository:
         ).first()
         return [] if row is None else [value for value in row if value]
 
-    async def purge(self, *, before: datetime) -> int:
-        """Delete tokens that expired before ``before``; returns the number removed."""
-        result = await self._s.execute(delete(OneTimeToken).where(OneTimeToken.expires_at < before))
+    async def live_owner(self, *, raw: str, purpose: OttPurpose, now: datetime) -> UUID | None:
+        """Read-only: owner of a token that is still unused and unexpired, else ``None``."""
+        return (
+            await self._s.execute(
+                select(OneTimeToken.user_id).where(
+                    OneTimeToken.token_hash == hash_token(raw),
+                    OneTimeToken.purpose == purpose,
+                    OneTimeToken.used_at.is_(None),
+                    OneTimeToken.expires_at > now,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def purge(self, *, before: datetime, used_before: datetime | None = None) -> int:
+        """Delete tokens that expired before ``before`` or were used before ``used_before``."""
+        stale = OneTimeToken.expires_at < before
+        if used_before is not None:
+            stale = or_(stale, OneTimeToken.used_at < used_before)
+        result = await self._s.execute(delete(OneTimeToken).where(stale))
         return rowcount(result)

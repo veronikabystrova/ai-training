@@ -14,12 +14,12 @@ from app.api.v1.trainer.routes import router as trainer_router
 from app.core.clock import Clock, SystemClock
 from app.core.config import Settings, get_settings
 from app.core.errors import install_error_handlers
-from app.core.jobs import LoggingJobQueue
 from app.core.logging import configure_logging
 from app.core.ratelimit import RateLimiter, RouteClass
 from app.core.security import PasswordHasher, PasswordPolicy, TokenIssuer
 from app.core.storage import S3ObjectStorage
 from app.db.session import create_engine, create_session_factory
+from app.jobs.queue import ArqJobQueue
 from app.services.ports import NullCommitmentChecker, UnconfiguredPurchaseExecutor
 
 
@@ -35,10 +35,13 @@ def create_app(settings: Settings | None = None, *, clock: Clock | None = None) 
         {RouteClass[name]: value for name, value in settings.rate_limit_overrides.items()},
     )
 
+    job_queue = ArqJobQueue(settings.redis_url)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
         await rate_limiter.aclose()
+        await job_queue.aclose()
         await engine.dispose()
 
     app = FastAPI(title="Trainer Platform API", lifespan=lifespan)
@@ -52,7 +55,7 @@ def create_app(settings: Settings | None = None, *, clock: Clock | None = None) 
         parallelism=settings.argon2_parallelism,
     )
     app.state.password_policy = PasswordPolicy()
-    app.state.job_queue = LoggingJobQueue()
+    app.state.job_queue = job_queue
     app.state.storage = S3ObjectStorage(settings.s3_bucket)
     app.state.commitment_checker = NullCommitmentChecker()
     app.state.purchase_executor = UnconfiguredPurchaseExecutor()

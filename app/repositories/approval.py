@@ -124,3 +124,7 @@ class PurchaseApprovalRepository:
             .execution_options(synchronize_session=False)
         )
         return list(result.scalars())
+
+    async def get_for_notification(self, approval_id: UUID) -> PurchaseApproval | None:
+        """System read for notification jobs: they hold only an approval id, no tenant context."""
+        return await self._s.get(PurchaseApproval, approval_id)
