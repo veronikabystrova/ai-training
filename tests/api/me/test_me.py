@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.identity import CoachProfile, UserRole, UserStatus
 from tests.api.helpers import bearer
+from tests.app_fixtures import TEST_DEFAULT_LIMIT
 from tests.factories import (
     MakeCoach,
     MakeTrainer,
@@ -218,7 +219,8 @@ async def test_get_me_p95_under_100ms_smoke(
     headers = bearer(principal_token(await make_user()))
     await client.get(ME, headers=headers)  # warm up
     samples = []
-    for _ in range(50):
+    # Stay within the per-principal test budget (warm-up included) so no sample is a 429.
+    for _ in range(TEST_DEFAULT_LIMIT - 1):
         started = time.perf_counter()
         assert (await client.get(ME, headers=headers)).status_code == 200
         samples.append(time.perf_counter() - started)

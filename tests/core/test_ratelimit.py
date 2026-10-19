@@ -45,3 +45,16 @@ async def test_real_limit_still_raises_after_outage_handling(redis_url: str) -> 
         await rl.hit(RouteClass.login_ip, "z")
     with pytest.raises(RateLimitedError):
         await rl.hit(RouteClass.login_ip, "z")
+
+
+def test_production_default_limit_is_300_per_minute() -> None:
+    # Tests shrink it via Settings.rate_limit_overrides; the spec value must stay intact.
+    assert RouteClass.default_principal.value == "300/minute"
+
+
+async def test_override_replaces_route_limit(redis_url: str) -> None:
+    rl = RateLimiter(redis_url, {RouteClass.default_principal: "2/minute"})
+    for _ in range(2):
+        await rl.hit(RouteClass.default_principal, "override")
+    with pytest.raises(RateLimitedError):
+        await rl.hit(RouteClass.default_principal, "override")

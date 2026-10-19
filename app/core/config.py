@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     s3_bucket: str = "app-media"
     media_base_url: str = "https://media.example.com"  # public origin serving stored keys
     presign_ttl_seconds: int = 300
+    # RouteClass name -> limit string, e.g. {"default_principal": "5/minute"}; empty in production.
+    rate_limit_overrides: dict[str, str] = Field(default_factory=dict)
 
 
 @lru_cache

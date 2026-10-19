@@ -13,6 +13,7 @@ from app.models.platform import AuditLog
 from app.repositories.one_time_token import OneTimeTokenRepository
 from tests.api.auth.helpers import LOGIN, REFRESH, code, login
 from tests.api.helpers import bearer
+from tests.app_fixtures import TEST_DEFAULT_LIMIT
 from tests.factories import TEST_PASSWORD, MakeTrainer, MakeUser
 from tests.fakes import FakeClock, FakeJobQueue
 
@@ -377,7 +378,7 @@ async def test_password_setup_stores_a_verifiable_hash(
 
 async def test_public_confirm_routes_share_the_default_ip_limit(client: AsyncClient) -> None:
     body = {"token": "x" * 43}
-    for _ in range(300):
+    for _ in range(TEST_DEFAULT_LIMIT):
         assert (await client.post(VERIFY, json=body)).status_code == 400
     r = await client.post(VERIFY, json=body)
     assert r.status_code == 429
@@ -391,7 +392,7 @@ CONTEXT_PASSWORD = "wojciechowskizygmunt"
 async def test_reset_request_default_ip_limit_applies_to_distinct_emails(
     client: AsyncClient,
 ) -> None:
-    for i in range(300):
+    for i in range(TEST_DEFAULT_LIMIT):
         r = await client.post(RESET_REQUEST, json={"email": f"user{i}@x.com"})
         assert r.status_code == 202
     r = await client.post(RESET_REQUEST, json={"email": "one-more@x.com"})

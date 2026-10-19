@@ -13,6 +13,9 @@ from app.main import create_app
 from tests.factories import TEST_JWT_SECRET
 from tests.fakes import FakeClock, FakeCommitmentChecker, FakeJobQueue, FakePurchaseExecutor
 
+# Above every specific limit (largest: register 20/h) so those tests never hit the default first.
+TEST_DEFAULT_LIMIT = 30
+
 
 @pytest.fixture
 def settings(database_url: str, redis_url: str) -> Settings:
@@ -25,6 +28,8 @@ def settings(database_url: str, redis_url: str) -> Settings:
         argon2_time_cost=1,
         argon2_memory_kib=8,
         argon2_parallelism=1,
+        # The production default is 300/min; a small budget keeps the 429 tests fast.
+        rate_limit_overrides={"default_principal": f"{TEST_DEFAULT_LIMIT}/minute"},
     )
 
 

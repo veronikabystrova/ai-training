@@ -1,4 +1,5 @@
 import time
+from collections.abc import Mapping
 from enum import Enum
 from typing import cast
 
@@ -24,7 +25,10 @@ class RouteClass(Enum):
 
 
 class RateLimiter:
-    def __init__(self, redis_url: str) -> None:
+    def __init__(self, redis_url: str, overrides: Mapping[RouteClass, str] | None = None) -> None:
+        # Overrides replace a route class's limit string (tests shrink the 300/min default).
+        limits = {route: route.value for route in RouteClass} | dict(overrides or {})
+        self._items = {route: parse(value) for route, value in limits.items()}
         storage = RedisStorage(
             redis_url.replace("redis://", "async+redis://", 1), implementation="redispy"
         )
@@ -42,7 +46,7 @@ class RateLimiter:
         Fail-open on a Redis outage (architecture ``rate_limit`` row): the request proceeds
         unthrottled and a warning is logged with the route class only (no key, no PII).
         """
-        item = parse(route.value)
+        item = self._items[route]
         ident = key.lower()
         try:
             allowed = await self._strategy.hit(item, route.name, ident)

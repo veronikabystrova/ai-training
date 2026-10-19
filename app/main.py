@@ -16,7 +16,7 @@ from app.core.config import Settings, get_settings
 from app.core.errors import install_error_handlers
 from app.core.jobs import LoggingJobQueue
 from app.core.logging import configure_logging
-from app.core.ratelimit import RateLimiter
+from app.core.ratelimit import RateLimiter, RouteClass
 from app.core.security import PasswordHasher, PasswordPolicy, TokenIssuer
 from app.core.storage import S3ObjectStorage
 from app.db.session import create_engine, create_session_factory
@@ -30,7 +30,10 @@ def create_app(settings: Settings | None = None, *, clock: Clock | None = None) 
     configure_logging()
 
     engine = create_engine(settings.database_url)
-    rate_limiter = RateLimiter(settings.redis_url)
+    rate_limiter = RateLimiter(
+        settings.redis_url,
+        {RouteClass[name]: value for name, value in settings.rate_limit_overrides.items()},
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
