@@ -8,7 +8,7 @@ after a write simply raises: the request session is closed, and rolled back, by
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import NoReturn
+from typing import NoReturn, cast
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -29,6 +29,7 @@ from app.core.errors import (
 from app.core.jobs import JobQueue, enqueue_best_effort
 from app.core.media import MediaUrlBuilder
 from app.core.security import (
+    OPAQUE_TOKEN_LENGTH,
     ClientFingerprint,
     PasswordHasher,
     PasswordPolicyPort,
@@ -124,11 +125,9 @@ def _account_exists() -> DomainError:
 
 def _is_usable(link: ShareLink, now: datetime) -> bool:
     """Active, unexpired and not exhausted (the tenant's own status is checked separately)."""
-    return not (
-        not link.is_active
-        or (link.expires_at is not None and link.expires_at <= now)
-        or (link.max_uses is not None and link.use_count >= link.max_uses)
-    )
+    expired = link.expires_at is not None and link.expires_at <= now
+    exhausted = link.max_uses is not None and link.use_count >= link.max_uses
+    return link.is_active and not expired and not exhausted
 
 
 class ShareLinkService:
@@ -452,10 +451,8 @@ class TrainerShareLinkService:
         else:
             if role is not UserRole.trainer:
                 raise ForbiddenError()  # coaches create player links only
-            if target_email is None:
-                raise UnprocessableError(
-                    details=[{"field": "target_email", "message": "required for coach_unique"}]
-                )
+            # CreateShareLink guarantees target_email for coach_unique links
+            target_email = cast("str", target_email)
             await self._ensure_coach_is_free(target_email)
             link = await self._links.add(
                 trainer_id=trainer_id,
@@ -536,6 +533,8 @@ class SharePreviewService:
 
     async def preview(self, *, code: str, client: ClientFingerprint) -> SharePreview:
         """A valid link records an ``opened`` event; every other state is the same 404."""
+        if len(code) > OPAQUE_TOKEN_LENGTH:
+            raise _share_link_invalid()  # cannot be a code we issued: skip the lookup
         link = await self._links.get_by_code(code)
         if link is None or not _is_usable(link, self._clock.now()):
             raise _share_link_invalid()

@@ -1,18 +1,14 @@
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
-from app.api.v1.common import Role, SessionUser
+from app.api.v1.common import Role, SessionUser, StoredEmail
 from app.api.v1.me.schemas import Timezone
 from app.models.identity import UserStatus
 from app.services.admin_user_service import AdminUserView, NewTrainer
 from app.services.impersonation_service import StartedImpersonation
-
-# Documented as an e-mail address, but not validated on the way out: an erased account keeps
-# ``deleted-<id>@erased.invalid``, which a strict validator rejects as a reserved domain.
-StoredEmail = Annotated[str, Field(json_schema_extra={"format": "email"})]
 
 
 class AdminUserSummary(BaseModel):

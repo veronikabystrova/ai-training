@@ -2,11 +2,12 @@ from collections.abc import Collection
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Integer, cast, delete, extract, func, update
+from sqlalchemy import Integer, cast, delete, extract, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.identity import (
     AvailabilityWindow,
+    CoachProfile,
     LinkStatus,
     OneTimeToken,
     PlayerProfile,
@@ -48,15 +49,20 @@ class UserErasureRepository:
         await self._s.flush()
         return row
 
-    async def scrub_owned_profiles(self, owner_user_id: UUID) -> list[tuple[UUID, UUID | None]]:
-        """Anonymise every player profile the user owns (own and dependents) and retire it.
+    async def scrub_owned_profiles(self, user_id: UUID) -> list[tuple[UUID, UUID | None]]:
+        """Anonymise every player profile the user owns or logs in to, and retire it.
+
+        A child login owns nothing (``owner_user_id`` is the parent) but its profile is its own
+        personal data, so ``login_user_id`` matches too.
 
         Returns ``(profile_id, login_user_id)`` for each. ``birth_date`` is NOT NULL, so it
         is generalised to January 1 of the birth year.
         """
         result = await self._s.execute(
             update(PlayerProfile)
-            .where(PlayerProfile.owner_user_id == owner_user_id)
+            .where(
+                or_(PlayerProfile.owner_user_id == user_id, PlayerProfile.login_user_id == user_id)
+            )
             .values(
                 display_name=ERASED_PLAYER_NAME,
                 school=None,
@@ -107,6 +113,15 @@ class UserErasureRepository:
             update(ShareLink)
             .where(ShareLink.target_email == email)
             .values(target_email=placeholder, is_active=False)
+            .execution_options(synchronize_session=False)
+        )
+
+    async def end_coach_tenures(self, user_id: UUID, *, now: datetime) -> None:
+        """An erased coach is a former coach: ``is_active`` and ``left_at`` change together."""
+        await self._s.execute(
+            update(CoachProfile)
+            .where(CoachProfile.user_id == user_id, CoachProfile.is_active)
+            .values(is_active=False, left_at=now)
             .execution_options(synchronize_session=False)
         )
 

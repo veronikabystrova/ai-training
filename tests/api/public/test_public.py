@@ -81,6 +81,21 @@ async def test_preview_records_opened_event_with_hashed_ip_and_ua(
     assert events[0].ip_hash != "127.0.0.1"
 
 
+async def test_preview_overlong_code_is_the_same_404_without_a_lookup(
+    client: AsyncClient,
+    make_trainer: MakeUser,
+    add_share_link: AddShareLink,
+    db_session: AsyncSession,
+) -> None:
+    link = await add_share_link(await make_trainer())
+    link.code = "x" * 44  # cannot be a code we issued, so it is never looked up
+    await db_session.flush()
+
+    r = await client.get(f"{PREVIEW}/{link.code}")
+    assert (r.status_code, code(r)) == (404, "SHARE_LINK_INVALID")
+    assert (await db_session.execute(select(ShareLinkEvent))).scalars().all() == []
+
+
 @pytest.mark.parametrize(
     "state", ["unknown", "inactive", "expired", "exhausted", "trainer_deactivated"]
 )

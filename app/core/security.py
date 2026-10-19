@@ -23,6 +23,9 @@ def hash_token(raw: str) -> bytes:
     return hashlib.sha256(raw.encode()).digest()
 
 
+OPAQUE_TOKEN_LENGTH = 43  # len(secrets.token_urlsafe(32))
+
+
 def new_opaque_token() -> str:
     return secrets.token_urlsafe(32)
 

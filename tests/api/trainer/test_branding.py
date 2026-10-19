@@ -150,8 +150,10 @@ async def test_logo_confirm_svg_is_sanitised_and_reserialised(
     make_trainer: MakeUser,
     principal_token: PrincipalToken,
     storage: FakeObjectStorage,
+    db_session: AsyncSession,
 ) -> None:
-    headers = bearer(principal_token(await make_trainer()))
+    trainer = await make_trainer()
+    headers = bearer(principal_token(trainer))
     key = await issued_key(client, headers, "image/svg+xml")
     await storage.put(
         key,
@@ -161,10 +163,38 @@ async def test_logo_confirm_svg_is_sanitised_and_reserialised(
 
     r = await client.post(CONFIRM, json={"logo_key": key}, headers=headers)
     assert r.status_code == 200
-    stored, content_type = storage.objects[key]
+    profile = await db_session.get(TrainerProfile, trainer.id)
+    assert profile is not None and profile.logo_key is not None
+    stored, content_type = storage.objects[profile.logo_key]
     assert content_type == "image/svg+xml"
     assert b"<script" not in stored and b"onload" not in stored
     assert b"<rect" in stored
+
+
+async def test_logo_confirm_svg_persists_a_never_presigned_key_replay_cannot_replace_it(
+    client: AsyncClient,
+    make_trainer: MakeUser,
+    principal_token: PrincipalToken,
+    storage: FakeObjectStorage,
+    db_session: AsyncSession,
+) -> None:
+    trainer = await make_trainer()
+    headers = bearer(principal_token(trainer))
+    key = await issued_key(client, headers, "image/svg+xml")
+    await storage.put(key, CLEAN_SVG, "image/svg+xml")
+
+    r = await client.post(CONFIRM, json={"logo_key": key}, headers=headers)
+    assert r.status_code == 200
+    profile = await db_session.get(TrainerProfile, trainer.id)
+    assert profile is not None and profile.logo_key is not None
+    served_key = profile.logo_key
+    assert served_key != key and r.json()["logo_url"].endswith(served_key)
+    before = storage.objects[served_key]
+
+    # replaying the still-valid presigned PUT with hostile bytes must not touch the served copy
+    await storage.put(key, b"<svg onload='x()'/>", "image/svg+xml")
+    assert storage.objects[served_key] == before
+    assert b"onload" not in storage.objects[served_key][0]
 
 
 async def test_logo_confirm_hostile_svg_xxe_422_invalid_logo(

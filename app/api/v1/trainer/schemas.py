@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, model_validator
 
+from app.api.v1.common import StoredEmail
 from app.api.v1.me.schemas import AvailabilitySet, availability_response
 from app.core.config import Settings
 from app.models.identity import ShareLink, ShareLinkKind
@@ -31,7 +32,7 @@ class ShareLinkResponse(BaseModel):
     code: str
     kind: ShareLinkKind
     url: str
-    target_email: EmailStr | None
+    target_email: StoredEmail | None
     expires_at: datetime | None  # coach_unique: now + 7 d; static: null
     max_uses: int | None  # coach_unique: 1; static: null (unlimited)
     use_count: int

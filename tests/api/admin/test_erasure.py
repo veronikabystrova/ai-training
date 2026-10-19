@@ -309,3 +309,95 @@ async def test_erased_user_cannot_be_updated_or_reactivated_409_user_erased(
     ):
         r = await client.request(method, path, json=body, headers=headers)
         assert (r.status_code, code(r)) == (409, "USER_ERASED"), path
+
+
+async def test_erasing_a_child_login_scrubs_the_profile_it_logs_in_to(
+    client: AsyncClient,
+    admin_token: str,
+    make_user: MakeUser,
+    make_trainer: MakeUser,
+    make_dependent: MakeDependent,
+    link_player: LinkPlayer,
+    add_window: AddWindow,
+    db_session: AsyncSession,
+) -> None:
+    trainer = await make_trainer()
+    parent = await make_user()
+    child = await make_dependent(parent=parent, with_login=True)
+    child.emergency_contact_name, child.emergency_contact_phone = "Mum", "+3311"
+    child.school = "School"
+    await link_player(trainer, child)
+    await add_window(child.id, weekday=2, start="09:00", end="10:00")
+    assert child.login_user_id is not None
+
+    r = await client.delete(f"{USERS}/{child.login_user_id}", headers=bearer(admin_token))
+    assert r.status_code == 204
+
+    await db_session.refresh(child)
+    assert child.display_name == "Deleted Player"
+    scrubbed = [
+        getattr(child, name)
+        for name in ("school", "emergency_contact_name", "emergency_contact_phone")
+    ]
+    assert scrubbed == [None] * 3
+    assert child.birth_date == date(2015, 1, 1)
+    assert child.is_active is False
+    links = (await db_session.execute(select(TrainerPlayerLink.status))).scalars().all()
+    assert links and all(status is LinkStatus.inactive for status in links)
+    windows = (await db_session.execute(select(AvailabilityWindow))).scalars().all()
+    assert windows == []
+    owner = await db_session.get(User, parent.id)
+    assert owner is not None and owner.status is UserStatus.active
+
+
+async def test_erasing_a_coach_ends_the_tenure(
+    client: AsyncClient,
+    admin_token: str,
+    make_trainer: MakeUser,
+    make_coach: MakeCoach,
+    principal_token: PrincipalToken,
+    db_session: AsyncSession,
+    clock: FakeClock,
+) -> None:
+    trainer = await make_trainer()
+    coach = await make_coach(trainer)
+
+    r = await client.delete(f"{USERS}/{coach.user_id}", headers=bearer(admin_token))
+    assert r.status_code == 204
+
+    await db_session.refresh(coach)
+    assert coach.is_active is False and coach.left_at == clock.now()
+    directory = await client.get(
+        USERS, params={"trainer_id": str(trainer.id), "limit": 100}, headers=bearer(admin_token)
+    )
+    assert [row["id"] for row in directory.json()["items"]] == [str(trainer.id)]
+    avail = await client.get(
+        f"/api/v1/trainer/coaches/{coach.user_id}/availability",
+        headers=bearer(principal_token(trainer)),
+    )
+    assert (avail.status_code, code(avail)) == (404, "NOT_FOUND")
+
+
+async def test_trainer_share_link_listing_survives_an_erased_invitee(
+    client: AsyncClient,
+    admin_token: str,
+    make_trainer: MakeUser,
+    make_user: MakeUser,
+    principal_token: PrincipalToken,
+) -> None:
+    trainer = await make_trainer()
+    invitee = await make_user(email="invitee@example.com", role=UserRole.coach)
+    headers = bearer(principal_token(trainer))
+    made = await client.post(
+        "/api/v1/trainer/share-links",
+        json={"kind": "coach_unique", "target_email": invitee.email},
+        headers=headers,
+    )
+    assert made.status_code == 201
+
+    erased = await client.delete(f"{USERS}/{invitee.id}", headers=bearer(admin_token))
+    assert erased.status_code == 204
+
+    listing = await client.get("/api/v1/trainer/share-links", headers=headers)
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["items"][0]["target_email"] == f"deleted-{invitee.id}@erased.invalid"

@@ -26,6 +26,7 @@ BRANDING_FIELDS = frozenset({"business_name", "brand_primary_color", "brand_seco
 
 _LOGO_PREFIX = "logos"
 _LOGO_PURPOSE = "logo"
+_SERVED_LOGO_PURPOSE = "logo-served"  # a different MAC domain: never valid as an upload key
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,11 +108,20 @@ class BrandingService:
             raise UnprocessableError(
                 "INVALID_LOGO", "Logo must be a png, svg or webp image of at most 2 MB"
             )
+        served_key = key
         if meta.content_type == "image/svg+xml":
-            # Never serve what the client uploaded: only the re-serialised allowlist copy.
+            # Never serve what the client uploaded: only the re-serialised allowlist copy, under
+            # a fresh key that was never presigned (the upload URL stays valid for its TTL and
+            # could otherwise overwrite the sanitised object).
             clean = sanitize_svg(await self._storage.get(key))
-            await self._storage.put(key, clean, "image/svg+xml")
+            served_key = issue_bound_key(
+                self._secret,
+                prefix=_LOGO_PREFIX,
+                purpose=_SERVED_LOGO_PURPOSE,
+                owner_id=trainer_id,
+            )
+            await self._storage.put(served_key, clean, "image/svg+xml")
         profile = await self._profile(trainer_id)
-        profile.logo_key = key
+        profile.logo_key = served_key
         await self._session.commit()
         return self._view(profile)

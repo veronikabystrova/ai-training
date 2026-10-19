@@ -301,6 +301,7 @@ class AdminUserService:
                 erased_ids.append(child.id)
 
         await self._erasures.delete_one_time_tokens(erased_ids)
+        await self._erasures.end_coach_tenures(user.id, now=now)
         if user.role is UserRole.trainer:
             await self._erasures.scrub_trainer_profile(user.id)
         await self._audit.record(
