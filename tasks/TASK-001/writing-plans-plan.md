@@ -1398,6 +1398,8 @@ async def test_get_me_p95_under_100ms_smoke(client, ...) -> None: ...        # 5
 
 ### Task 18: Availability (`/me/availability`, dependent variant)
 
+> **Review decision (2026-10-19):** dependent availability uses the parent's timezone; a different `timezone` => 422; never write the parent's profile.
+
 Spec: `GET/PUT /me/availability`, `PUT /me/players/{id}/availability`; `AvailabilityService.check_conflict` is a pure function.
 
 **Files:** Create `app/services/availability_service.py`; Modify me routes; Test `tests/services/test_availability_conflict.py`, `tests/api/me/test_availability.py`
@@ -1472,6 +1474,8 @@ async def test_contexts_non_player_and_child_403(client, ...) -> None: ...
 ---
 
 ### Task 20: Parent approvals
+
+> **Review decision (2026-10-19):** approve re-checks dependent profile and trainer link are active, else 404 `NOT_FOUND`, no executor call; deny still allowed.
 
 Spec: Approvals section; Conventions (Idempotency). `PurchaseExecutor` is a Protocol with a fake.
 

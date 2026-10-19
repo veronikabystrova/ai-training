@@ -1,3 +1,154 @@
+# Code Review — TASK-001 Phase E (Tasks 17-20: `/me`, avatar, email change, availability, dependents, contexts, parent approvals)
+
+Scope: `bf77434..20ba920` (`2389dd9`, `d44c3d5`, `dbd9d05`, `d577a91`, `8aa398a`, `20ba920`, and the doc
+commit `a586794`). Reviewed against plan Phase E, `specs/api-designer-spec.md` (Domain Me, Dependents,
+Approvals, Conventions), and architecture §2 / §5.
+
+## Summary
+
+Phase E is well built and matches the spec closely. Routes are thin. `PATCH /me` and `PATCH /me/players/{id}`
+use `model_fields_set` correctly, and an explicit `null` for a NOT NULL column is a 422 rather than a DB error.
+The email-change confirm consumes the token, swaps the email and revokes families in one savepoint, so
+`uq_users_email` un-consumes the token. Availability replace leaves overlap detection to the GiST constraint, and
+the timezone change rolls back with it. Approvals claim the idempotency key, lock the row, run the executor and
+store the response in one savepoint, and the 10-way parallel gate test proves there is one effect. The
+production executor fails loudly instead of faking success. The gate is green: 410 passed, 98% coverage.
+
+There are no Critical issues. There are **2 Major** issues: dependent availability is stored against the wrong
+timezone, and purchases can still be approved after the dependent or trainer link is removed. There are
+**8 Minor** issues.
+
+## Issues Found
+
+### Critical (Must Fix)
+
+- None.
+
+### Major (Should Fix)
+
+- [ ] **[Major] Dependent availability writes the parent's timezone, and a child login reads it in a different one** —
+  `app/services/availability_service.py:84`, `:100`, `:121`.
+  `replace_for_dependent` builds `_Subject(..., timezone_user_id=owner_user_id)`, so
+  `PUT /me/players/{id}/availability` with `"timezone": "Asia/Tokyo"` overwrites the **parent's**
+  `profiles.timezone`. That silently changes the parent's own `GET /me` and own availability, and every sibling's
+  set is reinterpreted. A child login reading the same windows through `GET /me/availability` resolves
+  `timezone_user_id=user_id` (the child login's own profile), so it sees the same `HH:MM` values labelled
+  with a different zone. Probe: parent PUT Tokyo, then parent `GET /me` → `"Asia/Tokyo"`, and child
+  `GET /me/availability` → `{"timezone": "UTC", "windows": [09:00-10:00]}`. The spec stores wall-clock times "in
+  the profile timezone", and a dependent has no `profiles` row of its own, so trainer reads (Task 21) will
+  inherit the ambiguity. The tests miss it because none of them checks the parent's timezone after a dependent PUT,
+  or a child read after a parent write.
+  **Fix (needs a design decision):** (a) add `timezone` to `player_profiles` (or to the availability set) and
+  use it for every player subject, whether the caller is the owner, the child login or a trainer; or (b) declare that
+  a dependent always uses the owner's timezone. Under (b), the child read path must use the owner's profile, and
+  the dependent PUT must not silently change the parent's own setting, so either reject a mismatching
+  `timezone` or document the side effect in the spec. Add tests for both read paths.
+
+- [ ] **[Major] Pending approvals stay approvable after the dependent is removed or the trainer link is ended** —
+  `app/services/approval_service.py:160-169`, `app/services/player_service.py:290-302`, `:328-340`.
+  `remove_player` and `remove_trainer` deactivate the profile and links, but they leave the dependent's
+  `pending` approvals alone. `decide` checks only the parent, the status and the expiry, so
+  `PurchaseExecutor.execute` still runs. Probe: create a pending approval, `DELETE /me/players/{id}` → 204,
+  then approve → 200, and the executor ran once. A purchase therefore executes for an inactive profile or
+  for a trainer the player is no longer linked to. The spec does not cover this case, so it needs the spec
+  owner's decision. Options: (a) in `_apply`, require the profile to be active and the trainer link to be
+  active, else 409 `APPROVAL_NOT_PENDING`; (b) move the affected pending approvals to `expired` in
+  the same transaction as the removal; (c) accept the behaviour and document it in the Approvals section.
+
+### Minor (Consider)
+
+- [ ] **[Minor] An avatar key is not bound to the user who presigned it** — `app/services/user_service.py:135-147`.
+  Any authenticated user can confirm any existing `avatars/<uuid>` key (probe: B confirms A's key → 200).
+  The impact is low, since avatars are public through the media origin, but any later per-user cleanup or
+  replacement of the old object would break or delete another user's avatar. **Fix:** bind the key to the user,
+  either with `avatars/{user_id}/{uuid}` (this changes the spec's `pattern`) or by recording the presigned key
+  on the profile (`pending_avatar_key`) and requiring a match at confirm. Ask the spec owner, because the key
+  format is in the spec.
+
+- [ ] **[Minor] `DenyRequest` does not forbid extra fields, and a deny without a body is rejected** —
+  `app/api/v1/me/schemas.py:354-355`, `app/api/v1/me/approvals.py:301-306`.
+  It is the only request model without `ConfigDict(extra="forbid")` (ground rule 4, spec Conventions). The
+  probe accepted `{"note": "x", "extra": 1}` with 200. A deny with no body gets 422 `VALIDATION_ERROR`,
+  even though `note` is optional. **Fix:** add `extra="forbid"`, and either make the body optional
+  (`payload: DenyRequest | None = None`) or state in the spec that `{}` is required.
+
+- [ ] **[Minor] Past-deadline approvals are listed as `pending`** — `app/services/approval_service.py:73-93`.
+  Until the expiry job (Task 25) runs `expire_due`, `GET /me/approvals?status=pending` returns rows whose
+  `expires_at` has passed, and approving one returns 409 `APPROVAL_NOT_PENDING`. **Fix:** report
+  `expired` in `approval_view` when `status is pending and expires_at <= now`, and apply the same
+  condition to the `status` filter. Alternatively, note the job dependency in the plan's open points.
+
+- [ ] **[Minor] The "argon2 outside the transaction" comment is not accurate** — `app/services/player_service.py:223-224`, `:262-277`.
+  By the time `_hash_login` runs, the preceding SELECTs have already autobegun a transaction, so a
+  pooled connection is held for the whole Argon2 hash. No row locks are held, so this is a
+  pool-pressure concern only. **Fix:** commit (end the read transaction) before hashing, as the auth flows do,
+  or correct the comment.
+
+- [ ] **[Minor] Untested branches on error paths** — `app/services/player_service.py:437-440`
+  (replacing an existing child login with a taken email → 409 `EMAIL_TAKEN`, a spec'd status for
+  `PATCH /me/players/{id}`), `app/services/approval_service.py:79-80` (the `TOKENS` currency mapping).
+  **Fix:** add one API test for each.
+
+- [ ] **[Minor] Child logins are created pre-verified for any address the parent types** —
+  `app/services/player_service.py:395-404`, `:430-436`. This follows the spec ("pre-verified"), but it has a
+  side effect. A typo or a foreign address both squats that email (the real owner gets `ACCOUNT_EXISTS`) and lets
+  whoever holds the mailbox take over the child login through `POST /auth/password-reset/request`.
+  **Fix:** confirm the risk with the spec owner. Either accept and record it, or send a verification email
+  to the child address and keep `is_email_verified=False` until it is confirmed.
+
+- [ ] **[Minor] One query per trainer id** — `app/services/player_service.py:207-208`. `create_player`
+  runs `has_active_link_for_owner` once per `trainer_ids` entry (up to 20). **Fix:** use one
+  `trainer_id IN (...)` query that returns the linked set, and return 404 if any id is missing.
+
+- [ ] **[Minor] Small hygiene items** —
+  (1) `app/api/v1/me/routes.py:46,48`: `_by_principal = by_principal` and `_ERRORS = ERRORS` are
+  aliases that add nothing.
+  (2) `app/api/v1/me/approvals.py:245`: `Depends(require_parent)` in `dependencies=` duplicates the
+  `ParentDep` parameter.
+  (3) `app/services/player_service.py:404`: the magic `first_name[:100]` is dead, because
+  `display_name` already has `max_length=100`.
+  (4) `app/db/alembic/versions/0002_identity.py`: `player_profiles.is_active` was added by editing
+  `0002` in place. This is fine while `0002` has never been applied outside this branch. Confirm that before
+  merge, or move the change to a `0003` migration.
+
+### Positive Notes
+
+- `UpdateMe` / `UpdatePlayer` handle absent, `null` and value correctly. `FIELD_NOT_ALLOWED` lists each
+  offending field, and the three states of `login` (absent, `null`, object) behave as the spec describes:
+  revoking a login keeps `login_user_id` and revokes refresh families.
+- Ownership misses are 404 everywhere (`get_owned`, `lock_by_id_for_parent`, `has_active_link_for_owner`),
+  and "unknown, inactive and unrelated trainer" cannot be told apart, so there is no oracle.
+- The email change reuses the Phase D token design: issuing supersedes earlier tokens, the outcome is
+  "token invalid" for wrong-purpose, expired and inactive-user tokens alike, and the confirm commits the
+  revoke and the audit row together.
+- Approvals: the idempotency hash covers method, path and body, so reusing a key across approvals or with a
+  different note is a 409. The replay comes from the stored JSON, so fresh and replayed bodies are identical,
+  and a failed executor leaves no claim behind.
+- `S3ObjectStorage` now creates its client lazily and under a lock, outside app construction.
+  `rate_limit_overrides` keeps the production defaults untouched while it lets the tests shrink the limits.
+- The tests are thorough (814 lines for dependents alone), and the API, service and concurrency layers are
+  each tested. There is no `# type: ignore` in the codebase.
+
+## Verification Evidence (DoD Standard tier, run in this review)
+
+| Check | Command | Result |
+|---|---|---|
+| Lint | `uv run ruff check .` | PASS |
+| Format | `uv run ruff format --check .` | PASS (142 files) |
+| Types | `uv run mypy app tests` | PASS (142 files, 0 issues) |
+| Tests | `uv run pytest -q --cov=app` | PASS: 410 passed; 98% total. `api/v1/me/*` 100%, `user_service` 96%, `player_service` 96%, `availability_service` 95%, `approval_service` 98% |
+| Warnings | pytest summary | 3 testcontainers deprecation warnings only |
+| Naming | `ls tasks/TASK-001` | PASS: all skill-prefixed |
+| Committed | `git status` | PASS: clean before this review file |
+
+Probes were run in a temporary test file, which was deleted afterwards:
+(1) parent PUT of dependent availability with Tokyo → parent `/me.timezone` = `Asia/Tokyo`, child reads `UTC`;
+(2) user B confirms user A's avatar key → 200;
+(3) remove dependent → approve its pending approval → 200, executor ran;
+(4) deny without body → 422; (5) deny with an unknown field → 200.
+
+---
+
 # Code Review — TASK-001 Phase D (Tasks 13-16: login/refresh/logout, password reset + verification + setup, register, impersonation exit)
 
 Scope: `63adf49..719e953` (`f0c1a86`, `fcd630e`, `e512e9c`, `ed9cc2a`, `719e953` and the doc commits

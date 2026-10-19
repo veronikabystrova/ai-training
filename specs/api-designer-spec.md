@@ -417,6 +417,8 @@ class PlayerResponse(BaseModel):
 ### [TASK-001] POST /me/players (2026-10-18)
 
 Query: `allow_duplicate: bool = False`. **Request:** `CreatePlayer`. Child login (if any) created in the same transaction: `users(role=player, active, pre-verified)`.
+**Accepted risk (user decision 2026-10-19):** the email is not verified, so a mistyped address lets that mailbox's owner take the child
+account over via password reset.
 
 **Response:** `201 PlayerResponse`.
 
@@ -439,6 +441,9 @@ Soft-removes a dependent (profile inactive, links inactive, child login inactive
 ### [TASK-001] PUT /me/players/{id}/availability (2026-10-18)
 
 Dependent's weekly set; same body/response/errors as `PUT /me/availability`. Another owner ⇒ 404. Child principal ⇒ 403.
+A dependent's times are always in the **parent's (owner's) profile timezone** (user decision 2026-10-19): a `timezone` that differs from the
+parent's ⇒ 422 `VALIDATION_ERROR`; this route never changes the parent's profile. A child login reading its own availability
+sees the owner's timezone.
 
 ### [TASK-001] POST /me/players/{id}/trainers (2026-10-18)
 
@@ -486,7 +491,9 @@ Query: `trainer_id: UUID` (required), `status: ApprovalStatus | None`, `limit`, 
 ### [TASK-001] POST /me/approvals/{id}/approve (2026-10-18)
 
 Headers: `Idempotency-Key` (required). No body. Calls `PurchaseExecutor.execute` in the same transaction; row-locked decision (10-way parallel ⇒ one effect).
-**Response:** `200 ApprovalResponse`. **Status Codes:** 200 · 400 `IDEMPOTENCY_KEY_REQUIRED` · 404 (another parent's) · 409 `APPROVAL_NOT_PENDING` · 409 `IDEMPOTENCY_KEY_REUSED`.
+Approve re-checks that the dependent profile and its trainer link are still active; otherwise 404 `NOT_FOUND` and no purchase
+(user decision 2026-10-19). Deny is still allowed so the parent can clear the request.
+**Response:** `200 ApprovalResponse`. **Status Codes:** 200 · 400 `IDEMPOTENCY_KEY_REQUIRED` · 404 (another parent's; dependent removed or trainer link inactive) · 409 `APPROVAL_NOT_PENDING` · 409 `IDEMPOTENCY_KEY_REUSED`.
 
 ### [TASK-001] POST /me/approvals/{id}/deny (2026-10-18)
 
