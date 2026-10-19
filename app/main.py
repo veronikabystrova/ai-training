@@ -19,6 +19,7 @@ from app.core.ratelimit import RateLimiter
 from app.core.security import PasswordHasher, PasswordPolicy, TokenIssuer
 from app.core.storage import S3ObjectStorage
 from app.db.session import create_engine, create_session_factory
+from app.services.ports import NullCommitmentChecker, UnconfiguredPurchaseExecutor
 
 
 def create_app(settings: Settings | None = None, *, clock: Clock | None = None) -> FastAPI:
@@ -49,6 +50,8 @@ def create_app(settings: Settings | None = None, *, clock: Clock | None = None) 
     app.state.password_policy = PasswordPolicy()
     app.state.job_queue = LoggingJobQueue()
     app.state.storage = S3ObjectStorage(settings.s3_bucket)
+    app.state.commitment_checker = NullCommitmentChecker()
+    app.state.purchase_executor = UnconfiguredPurchaseExecutor()
     app.state.token_issuer = TokenIssuer(
         secret=settings.jwt_secret.get_secret_value(),
         access_ttl=settings.access_ttl_seconds,

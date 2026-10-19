@@ -44,6 +44,26 @@ class TrainerPlayerLinkRepository:
         )
         return bool(result.scalar())
 
+    async def has_active_link_for_owner(self, *, trainer_id: UUID, owner_user_id: UUID) -> bool:
+        """The owner has an active profile actively linked to this (active) trainer."""
+        trainer = aliased(User)
+        result = await self._s.execute(
+            select(
+                exists()
+                .where(
+                    TrainerPlayerLink.trainer_id == trainer_id,
+                    TrainerPlayerLink.status == LinkStatus.active,
+                    TrainerPlayerLink.player_profile_id == PlayerProfile.id,
+                    PlayerProfile.owner_user_id == owner_user_id,
+                    PlayerProfile.is_active,
+                    trainer.id == TrainerPlayerLink.trainer_id,
+                    trainer.status == UserStatus.active,
+                )
+                .correlate(None)
+            )
+        )
+        return bool(result.scalar())
+
     async def active_profile_ids_for_caller(
         self, *, trainer_id: UUID, user_id: UUID, child: bool
     ) -> frozenset[UUID]:

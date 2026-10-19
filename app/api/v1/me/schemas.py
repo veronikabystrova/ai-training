@@ -1,4 +1,4 @@
-from datetime import time
+from datetime import date, datetime, time
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
@@ -14,9 +14,17 @@ from pydantic import (
 )
 
 from app.api.deps import Principal
-from app.api.v1.common import Role, iana_timezone
+from app.api.v1.common import Password, Role, iana_timezone
+from app.models.identity import Gender, LinkSource, LinkStatus
 from app.repositories.availability import WindowSpec
 from app.services.availability_service import AvailabilityView
+from app.services.player_service import (
+    ContextView,
+    LoginInput,
+    NewPlayer,
+    PlayerView,
+    TrainerLinkView,
+)
 from app.services.user_service import AVATAR_MAX_BYTES, MeView
 
 Timezone = Annotated[str, Field(max_length=64), AfterValidator(iana_timezone)]
@@ -188,4 +196,139 @@ def availability_response(view: AvailabilityView) -> AvailabilitySet:
     return AvailabilitySet(
         timezone=view.timezone,
         windows=[WeeklyWindow.model_validate(w) for w in view.windows],
+    )
+
+
+# --- dependents (/me/players) and contexts ------------------------------------------------
+
+
+class ChildLogin(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(max_length=255)
+    password: Password
+
+    def to_input(self) -> LoginInput:
+        return LoginInput(email=self.email, password=self.password)
+
+
+class CreatePlayer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=100)
+    birth_date: date  # 1 <= age < 18 on Clock.today(), else 422 INVALID_AGE
+    gender: Gender
+    skill_level: str | None = Field(default=None, max_length=50)
+    trainer_ids: list[UUID] = Field(default=[], max_length=20)  # already linked to the parent
+    token_spend_requires_approval: bool = False
+    login: ChildLogin | None = None
+
+    def to_input(self) -> NewPlayer:
+        return NewPlayer(
+            display_name=self.display_name,
+            birth_date=self.birth_date,
+            gender=self.gender,
+            skill_level=self.skill_level,
+            trainer_ids=self.trainer_ids,
+            token_spend_requires_approval=self.token_spend_requires_approval,
+            login=self.login.to_input() if self.login else None,
+        )
+
+
+_PLAYER_NOT_NULLABLE = ("display_name", "birth_date", "gender", "token_spend_requires_approval")
+
+
+class UpdatePlayer(BaseModel):
+    """All optional. ``login``: absent = unchanged, ``null`` = revoke, object = create/replace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=100)
+    birth_date: date | None = None
+    gender: Gender | None = None
+    skill_level: str | None = Field(default=None, max_length=50)
+    token_spend_requires_approval: bool | None = None
+    login: ChildLogin | None = None  # distinguished with model_fields_set
+
+    @model_validator(mode="after")
+    def _no_null_for_required_fields(self) -> Self:
+        for name in _PLAYER_NOT_NULLABLE:
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError(f"{name} cannot be null")
+        return self
+
+    def changes(self) -> dict[str, Any]:
+        """Only the fields the client sent (``model_fields_set``)."""
+        changes = {name: getattr(self, name) for name in self.model_fields_set}
+        if "login" in changes and self.login is not None:
+            changes["login"] = self.login.to_input()
+        return changes
+
+
+class AddTrainerLink(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trainer_id: UUID  # a trainer the parent is already linked to (source parent_added)
+
+
+class TrainerLinkResponse(BaseModel):
+    trainer_id: UUID
+    business_name: str
+    status: LinkStatus
+    source: LinkSource
+    linked_at: datetime
+
+
+class PlayerResponse(BaseModel):
+    id: UUID
+    display_name: str
+    birth_date: date
+    gender: Gender
+    skill_level: str | None
+    is_dependent: bool
+    token_spend_requires_approval: bool
+    has_login: bool  # login_user_id set and that user active
+    trainers: list[TrainerLinkResponse]
+
+
+def trainer_link_response(link: TrainerLinkView) -> TrainerLinkResponse:
+    return TrainerLinkResponse(
+        trainer_id=link.trainer_id,
+        business_name=link.business_name,
+        status=link.status,
+        source=link.source,
+        linked_at=link.linked_at,
+    )
+
+
+def player_response(view: PlayerView) -> PlayerResponse:
+    p = view.profile
+    return PlayerResponse(
+        id=p.id,
+        display_name=p.display_name,
+        birth_date=p.birth_date,
+        gender=p.gender,
+        skill_level=p.skill_level,
+        is_dependent=p.is_dependent,
+        token_spend_requires_approval=p.token_spend_requires_approval,
+        has_login=view.has_login,
+        trainers=[trainer_link_response(t) for t in view.trainers],
+    )
+
+
+class PlayerContext(BaseModel):
+    trainer_id: UUID
+    business_name: str
+    logo_url: str | None
+    player_profile_ids: list[UUID]  # profiles the caller may act for under this trainer
+    linked_at: datetime
+
+
+def context_response(view: ContextView) -> PlayerContext:
+    return PlayerContext(
+        trainer_id=view.trainer_id,
+        business_name=view.business_name,
+        logo_url=view.logo_url,
+        player_profile_ids=view.player_profile_ids,
+        linked_at=view.linked_at,
     )

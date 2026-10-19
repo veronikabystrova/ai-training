@@ -52,6 +52,7 @@ from app.models.identity import (
 from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.trainer_player_link import TrainerPlayerLinkRepository
 from app.services.idempotency_service import IdempotencyGuard
+from app.services.ports import CommitmentChecker, PurchaseExecutor
 
 Role = UserRole
 
@@ -127,6 +128,16 @@ def get_storage(request: Request) -> ObjectStorage:
     return storage
 
 
+def get_commitment_checker(request: Request) -> CommitmentChecker:
+    checker: CommitmentChecker = request.app.state.commitment_checker
+    return checker
+
+
+def get_purchase_executor(request: Request) -> PurchaseExecutor:
+    executor: PurchaseExecutor = request.app.state.purchase_executor
+    return executor
+
+
 def get_fingerprint(
     request: Request, settings: Annotated[Settings, Depends(get_settings_dep)]
 ) -> ClientFingerprint:
@@ -148,6 +159,8 @@ FingerprintDep = Annotated[ClientFingerprint, Depends(get_fingerprint)]
 PasswordPolicyDep = Annotated[PasswordPolicyPort, Depends(get_password_policy)]
 JobQueueDep = Annotated[JobQueue, Depends(get_job_queue)]
 StorageDep = Annotated[ObjectStorage, Depends(get_storage)]
+CommitmentCheckerDep = Annotated[CommitmentChecker, Depends(get_commitment_checker)]
+PurchaseExecutorDep = Annotated[PurchaseExecutor, Depends(get_purchase_executor)]
 
 
 # --- authentication ------------------------------------------------------------------------

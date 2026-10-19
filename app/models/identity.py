@@ -219,6 +219,8 @@ class PlayerProfile(IdMixin, TimestampMixin, Base):
     school: Mapped[str | None] = mapped_column(String(255))
     jersey_number: Mapped[int | None] = mapped_column(SmallInteger)
     is_dependent: Mapped[bool] = mapped_column(server_default=false())
+    # False once a parent removed the dependent (soft removal keeps history)
+    is_active: Mapped[bool] = mapped_column(server_default=true())
     emergency_contact_name: Mapped[str | None] = mapped_column(String(120))
     emergency_contact_phone: Mapped[str | None] = mapped_column(String(32))
     token_spend_requires_approval: Mapped[bool] = mapped_column(server_default=true())

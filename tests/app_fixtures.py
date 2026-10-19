@@ -11,7 +11,7 @@ from app.core.config import Settings
 from app.db.session import create_session_factory
 from app.main import create_app
 from tests.factories import TEST_JWT_SECRET
-from tests.fakes import FakeClock, FakeJobQueue
+from tests.fakes import FakeClock, FakeCommitmentChecker, FakeJobQueue
 
 
 @pytest.fixture
@@ -34,13 +34,23 @@ def jobs() -> FakeJobQueue:
 
 
 @pytest.fixture
+def commitments() -> FakeCommitmentChecker:
+    return FakeCommitmentChecker()
+
+
+@pytest.fixture
 def committed_app(
-    settings: Settings, clock: FakeClock, committed_engine: AsyncEngine, jobs: FakeJobQueue
+    settings: Settings,
+    clock: FakeClock,
+    committed_engine: AsyncEngine,
+    jobs: FakeJobQueue,
+    commitments: FakeCommitmentChecker,
 ) -> FastAPI:
     """The real app over real connections: every request commits (``@pytest.mark.concurrency``)."""
     application = create_app(settings, clock=clock)
     application.state.session_factory = create_session_factory(committed_engine)
     application.state.job_queue = jobs
+    application.state.commitment_checker = commitments
     return application
 
 

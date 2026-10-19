@@ -6,7 +6,6 @@ from app.api.deps import (
     ClockDep,
     HasherDep,
     JobQueueDep,
-    Principal,
     PrincipalDep,
     SessionDep,
     SettingsDep,
@@ -14,7 +13,14 @@ from app.api.deps import (
     rate_limit,
 )
 from app.api.v1.auth.schemas import StatusResponse
-from app.api.v1.me.deps import ERRORS, by_principal, require_availability_owner
+from app.api.v1.me.deps import (
+    ERRORS,
+    AvailabilityOwnerDep,
+    AvailabilityServiceDep,
+    ParentDep,
+    PlayerServiceDep,
+    by_principal,
+)
 from app.api.v1.me.schemas import (
     AvailabilitySet,
     AvatarConfirmRequest,
@@ -22,15 +28,16 @@ from app.api.v1.me.schemas import (
     EmailChangeConfirm,
     EmailChangeRequest,
     MeResponse,
+    PlayerContext,
     PresignResponse,
     UpdateMe,
     availability_response,
+    context_response,
     me_response,
 )
 from app.core.ratelimit import RouteClass
 from app.repositories.audit import AuditRepository
 from app.services.audit_service import DbAuditService
-from app.services.availability_service import AvailabilityService
 from app.services.user_service import UserService
 
 router = APIRouter(prefix="/me", tags=["me"])
@@ -60,14 +67,6 @@ def get_user_service(
 
 
 UserServiceDep = Annotated[UserService, Depends(get_user_service)]
-
-
-def get_availability_service(session: SessionDep) -> AvailabilityService:
-    return AvailabilityService(session=session)
-
-
-AvailabilityServiceDep = Annotated[AvailabilityService, Depends(get_availability_service)]
-AvailabilityOwnerDep = Annotated[Principal, Depends(require_availability_owner)]
 
 
 @router.get(
@@ -212,3 +211,14 @@ async def put_availability(
         windows=payload.specs(),
     )
     return availability_response(view)
+
+
+@router.get(
+    "/contexts",
+    response_model=list[PlayerContext],
+    summary="Trainer contexts the caller may act in",
+    dependencies=[_by_principal],
+    responses={401: _ERRORS[401], 403: {"description": "Not a parent account"}},
+)
+async def get_contexts(principal: ParentDep, service: PlayerServiceDep) -> list[PlayerContext]:
+    return [context_response(c) for c in await service.contexts(user_id=principal.user_id)]

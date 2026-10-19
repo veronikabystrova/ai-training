@@ -26,3 +26,20 @@ class CampSubmissionReader(Protocol):
     async def get_prefill(self, submission_id: UUID) -> Mapping[str, str] | None:
         """Registration pre-fill for a camp submission, or ``None`` when it does not exist."""
         ...
+
+
+class NullCommitmentChecker:
+    """Production default until the scheduling epic lands: no RSVP data exists, so no blocker."""
+
+    async def future_paid_rsvps(self, player_profile_id: UUID, trainer_id: UUID) -> list[UUID]:
+        return []
+
+
+class UnconfiguredPurchaseExecutor:
+    """Production default until the owning epic wires a real executor: fails loudly.
+
+    Approving without an executor must never look like a successful purchase.
+    """
+
+    async def execute(self, approval: PurchaseApproval) -> None:
+        raise RuntimeError("PurchaseExecutor is not configured")

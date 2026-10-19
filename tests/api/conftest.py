@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.main import create_app
 from tests.api.probes import router as probe_router
-from tests.fakes import FakeClock, FakeJobQueue, FakeObjectStorage
+from tests.fakes import FakeClock, FakeCommitmentChecker, FakeJobQueue, FakeObjectStorage
 
 
 @pytest.fixture
@@ -19,6 +19,7 @@ def app(
     db_session: AsyncSession,
     jobs: FakeJobQueue,
     storage: FakeObjectStorage,
+    commitments: FakeCommitmentChecker,
 ) -> FastAPI:
     """The real app (middleware, error handlers, routers) plus probe routes.
 
@@ -34,6 +35,7 @@ def app(
     application.state.effects = []
     application.state.job_queue = jobs
     application.state.storage = storage
+    application.state.commitment_checker = commitments
     application.include_router(probe_router)
     return application
 

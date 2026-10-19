@@ -168,6 +168,7 @@ def upgrade() -> None:
         sa.Column("school", sa.String(255), nullable=True),
         sa.Column("jersey_number", sa.SmallInteger(), nullable=True),
         sa.Column("is_dependent", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("emergency_contact_name", sa.String(120), nullable=True),
         sa.Column("emergency_contact_phone", sa.String(32), nullable=True),
         sa.Column(
