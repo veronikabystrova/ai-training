@@ -743,3 +743,12 @@ No body. Creates `impersonation_sessions` (≤ 60 min); token `sub=target, act=a
 5. **Password policy is validated before the one-time token is consumed** on `password-reset/confirm` and `password/setup`.
 6. **Dependent age:** `1 <= age < 18` (spec §10), so US-01.03's "1–18" is treated as 1–17.
 7. **`legal_retention_until`:** `erased_at + settings.erasure_retention_years`, default 7. Pending legal sign-off.
+
+### Background jobs (Task 25 decisions, 2026-10-19, confirmed by user)
+
+8. **Job name `notify_child_decision`** (spec name) is what `ApprovalService` enqueues on deny; the worker handles any decided status.
+9. **`send_email_change` is kept** (not a spec-table job): the email-change confirmation link goes to the **new** address, proving the user controls it.
+10. **Nightly purge scope:** expired refresh tokens and expired idempotency keys, plus used or expired one-time tokens (7-day retention for used ones). Nothing else is purged.
+11. **Email links (assumption):** built by `Settings.frontend_url(route, token=...)` from `public_base_url` (the single frontend origin, also used for share-link URLs). Frontend routes: `/setup-password`, `/verify-email`, `/reset-password`, `/confirm-email-change`, each taking `?token=<raw token>`.
+12. **`notify_parent_approval_request`** is kept and registered, but its enqueue site belongs to the purchase-approval creation flow (another epic); nothing in Epic-01 enqueues it.
+13. **`delete_storage_object`** (kwargs: `key` only): best-effort removal of a replaced or erased avatar/logo object, enqueued after commit when a confirmed avatar or logo replaces an older key, and when erasure clears an avatar or a trainer logo. There is no remove-logo route. Storage delete is idempotent (a missing object is success), keys outside `avatars/` and `logos/` are refused, and retries use the standard backoff.

@@ -1689,6 +1689,8 @@ Also cover `send_trainer_invite`, `send_welcome_email`, `send_verification_email
 
 **Step 4:** Run: `uv run pytest tests/jobs`. Expected: PASS. **Step 5:** `git add app tests && git commit -m "feat(jobs): add ARQ worker, identity jobs and cron registry"`
 
+> **Decisions (2026-10-19):** the enqueued child job is `notify_child_decision` (spec name); `send_email_change` is kept (goes to the new address); the purge keeps its scope (expired refresh tokens, idempotency keys, one-time tokens); email links come from `Settings.frontend_url` over `public_base_url` plus route constants; `notify_parent_approval_request` is kept, its enqueue site belongs to the purchase-approval flow (other epic). Added `delete_storage_object` (kwargs `key`): best-effort S3 delete after commit when a logo/avatar is replaced or erased (closes the Task 24 deferral); no remove-logo route exists. Spec: `Resolved decisions` 8-13.
+
 ---
 
 ### Task 26: Permission matrix, cross-tenant gate, meta-test
