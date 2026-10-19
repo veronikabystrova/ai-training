@@ -1,12 +1,30 @@
+from collections.abc import Collection
 from datetime import datetime
 from uuid import UUID
 
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.identity import UserErasure
+from app.models.identity import (
+    AvailabilityWindow,
+    LinkStatus,
+    OneTimeToken,
+    PlayerProfile,
+    ShareLink,
+    TrainerPlayerLink,
+    TrainerProfile,
+    UserErasure,
+)
+from app.services.erasure import ERASED_PLAYER_NAME
 
 
 class UserErasureRepository:
+    """The erasure ledger plus the bulk scrubs of one erasure (US-01.13).
+
+    The scrubs are keyed by the erased user or by the personal data itself, not by tenant:
+    they are an admin-only system operation, so no ``trainer_id`` applies.
+    """
+
     def __init__(self, session: AsyncSession) -> None:
         self._s = session
 
@@ -29,3 +47,69 @@ class UserErasureRepository:
         self._s.add(row)
         await self._s.flush()
         return row
+
+    async def scrub_owned_profiles(self, owner_user_id: UUID) -> list[tuple[UUID, UUID | None]]:
+        """Anonymise every player profile the user owns (own and dependents) and retire it.
+
+        Returns ``(profile_id, login_user_id)`` for each. ``birth_date`` is NOT NULL and stays.
+        """
+        result = await self._s.execute(
+            update(PlayerProfile)
+            .where(PlayerProfile.owner_user_id == owner_user_id)
+            .values(
+                display_name=ERASED_PLAYER_NAME,
+                school=None,
+                skill_level=None,
+                jersey_number=None,
+                emergency_contact_name=None,
+                emergency_contact_phone=None,
+                is_active=False,
+            )
+            .returning(PlayerProfile.id, PlayerProfile.login_user_id)
+            .execution_options(synchronize_session=False)
+        )
+        return [(row.id, row.login_user_id) for row in result.all()]
+
+    async def deactivate_links(self, player_profile_ids: Collection[UUID]) -> None:
+        await self._s.execute(
+            update(TrainerPlayerLink)
+            .where(TrainerPlayerLink.player_profile_id.in_(player_profile_ids))
+            .values(status=LinkStatus.inactive)
+            .execution_options(synchronize_session=False)
+        )
+
+    async def delete_availability(self, subject_ids: Collection[UUID]) -> None:
+        await self._s.execute(
+            delete(AvailabilityWindow)
+            .where(AvailabilityWindow.subject_id.in_(subject_ids))
+            .execution_options(synchronize_session=False)
+        )
+
+    async def delete_one_time_tokens(self, user_ids: Collection[UUID]) -> None:
+        """Pending tokens may carry the new address (email change): they go with the user."""
+        await self._s.execute(
+            delete(OneTimeToken)
+            .where(OneTimeToken.user_id.in_(user_ids))
+            .execution_options(synchronize_session=False)
+        )
+
+    async def scrub_share_link_email(self, email: str, *, placeholder: str) -> None:
+        """Replace the address on links issued to it and deactivate them.
+
+        ``target_email`` is CITEXT, so the match ignores case. The column is NOT NULL for
+        ``coach_unique`` links (``ck_share_links_kind_fields``), hence a placeholder.
+        """
+        await self._s.execute(
+            update(ShareLink)
+            .where(ShareLink.target_email == email)
+            .values(target_email=placeholder, is_active=False)
+            .execution_options(synchronize_session=False)
+        )
+
+    async def scrub_trainer_profile(self, trainer_id: UUID) -> None:
+        await self._s.execute(
+            update(TrainerProfile)
+            .where(TrainerProfile.user_id == trainer_id)
+            .values(address=None, website=None, description=None, logo_key=None)
+            .execution_options(synchronize_session=False)
+        )

@@ -1,14 +1,14 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Text, cast, literal_column, select, tuple_, union, update
+from sqlalchemy import Text, and_, cast, literal_column, or_, select, tuple_, union, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import contains_eager
 
 from app.core.errors import UnprocessableError
 from app.core.pagination import decode_cursor, encode_cursor
 from app.db.session import rowcount
-from app.models.identity import Profile, User, UserRole, UserStatus
+from app.models.identity import CoachProfile, Profile, User, UserRole, UserStatus
 
 MIN_QUERY_LENGTH = 2
 
@@ -30,6 +30,16 @@ class UserRepository:
     async def get(self, user_id: UUID) -> User | None:
         return await self._s.get(User, user_id)
 
+    async def lock(self, user_id: UUID) -> User | None:
+        """``SELECT ... FOR UPDATE``: concurrent admin actions on one user serialise."""
+        result = await self._s.execute(
+            select(User)
+            .where(User.id == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_email(self, email: str) -> User | None:
         """``users.email`` is CITEXT, so the comparison is case-insensitive."""
         result = await self._s.execute(select(User).where(User.email == email))
@@ -41,6 +51,7 @@ class UserRepository:
         query: str | None = None,
         role: UserRole | None = None,
         status: UserStatus | None = None,
+        trainer_id: UUID | None = None,
         cursor: str | None = None,
         limit: int = 20,
     ) -> tuple[list[User], str | None]:
@@ -71,6 +82,17 @@ class UserRepository:
             stmt = stmt.where(User.role == role)
         if status is not None:
             stmt = stmt.where(User.status == status)
+        if trainer_id is not None:
+            # "Belongs to this tenant": the trainer itself plus its active coaches.
+            coaches = select(CoachProfile.user_id).where(
+                CoachProfile.trainer_id == trainer_id, CoachProfile.is_active
+            )
+            stmt = stmt.where(
+                or_(
+                    and_(User.id == trainer_id, User.role == UserRole.trainer),
+                    User.id.in_(coaches),
+                )
+            )
         if cursor is not None:
             ts, ident = decode_cursor(cursor)
             stmt = stmt.where(tuple_(User.created_at, User.id) < tuple_(ts, ident))

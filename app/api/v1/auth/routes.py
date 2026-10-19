@@ -17,6 +17,7 @@ from app.api.deps import (
     SettingsDep,
     rate_limit,
 )
+from app.api.v1.auth.deps import ImpersonationServiceDep
 from app.api.v1.auth.schemas import (
     LinkedResponse,
     LoginRequest,
@@ -38,7 +39,6 @@ from app.core.ratelimit import RouteClass
 from app.repositories.audit import AuditRepository
 from app.services.audit_service import DbAuditService
 from app.services.auth_service import AuthService
-from app.services.impersonation_service import ImpersonationService
 from app.services.sharelink_service import (
     Registered,
     RegisterInput,
@@ -299,13 +299,6 @@ async def register(
         user=session_user(result.user, trainer_id=result.trainer_id, child=result.child),
         linked_trainer_id=result.linked_trainer_id,
     )
-
-
-def get_impersonation_service(session: SessionDep, clock: ClockDep) -> ImpersonationService:
-    return ImpersonationService(session=session, clock=clock)
-
-
-ImpersonationServiceDep = Annotated[ImpersonationService, Depends(get_impersonation_service)]
 
 
 @router.post(

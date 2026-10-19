@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from datetime import datetime
 from uuid import UUID
 
@@ -35,6 +36,15 @@ class CoachProfileRepository:
             select(CoachProfile).where(CoachProfile.user_id == user_id, CoachProfile.is_active)
         )
         return result.scalar_one_or_none()
+
+    async def active_trainer_ids(self, user_ids: Collection[UUID]) -> dict[UUID, UUID]:
+        """``coach user_id -> trainer_id`` for those users that hold an active tenure."""
+        result = await self._s.execute(
+            select(CoachProfile.user_id, CoachProfile.trainer_id).where(
+                CoachProfile.user_id.in_(user_ids), CoachProfile.is_active
+            )
+        )
+        return {user_id: trainer_id for user_id, trainer_id in result.all()}
 
     async def list_active(self, *, trainer_id: UUID) -> list[CoachProfile]:
         result = await self._s.execute(
