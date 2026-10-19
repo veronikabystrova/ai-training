@@ -4,6 +4,9 @@ The service owns the transaction (repositories never commit). Reads end without 
 transaction; every write commits once.
 """
 
+import hashlib
+import hmac
+import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
@@ -24,7 +27,6 @@ from app.core.errors import (
     map_integrity_error,
     token_invalid,
 )
-from app.core.ids import new_id
 from app.core.jobs import JobQueue, enqueue_best_effort
 from app.core.media import MediaUrlBuilder
 from app.core.security import PasswordHasher
@@ -71,6 +73,7 @@ class UserService:
         self._storage = storage
         self._audit = audit
         self._jobs = jobs
+        self._avatar_secret = settings.jwt_secret.get_secret_value().encode()
         self._media = MediaUrlBuilder(settings.media_base_url)
         self._users = UserRepository(session)
         self._profiles = ProfileRepository(session)
@@ -124,15 +127,17 @@ class UserService:
     # --- avatar ----------------------------------------------------------------------------
 
     async def presign_avatar(
-        self, *, content_type: str, content_length: int
+        self, user_id: UUID, *, content_type: str, content_length: int
     ) -> tuple[str, PresignedPut]:
-        key = f"avatars/{new_id()}"
+        key = _issue_avatar_key(self._avatar_secret, user_id)
         presigned = await self._storage.presign_put(
             key, content_type, content_length, self._settings.presign_ttl_seconds
         )
         return key, presigned
 
     async def confirm_avatar(self, user_id: UUID, *, key: str) -> MeView:
+        if not _avatar_key_is_issued_to(self._avatar_secret, user_id, key):
+            raise NotFoundError()  # not issued to this caller: same answer as a missing object
         meta = await self._storage.head(key)
         if meta is None:
             raise NotFoundError()
@@ -203,6 +208,28 @@ class UserService:
             subject_id=user.id,
         )
         await self._session.commit()
+
+
+def _avatar_tag(secret: bytes, user_id: UUID, nonce: bytes) -> bytes:
+    return hmac.new(secret, b"avatar:" + user_id.bytes + nonce, hashlib.sha256).digest()[:8]
+
+
+def _issue_avatar_key(secret: bytes, user_id: UUID) -> str:
+    """``avatars/<uuid-shaped>``: 8 random bytes plus an 8-byte MAC binding them to the user."""
+    nonce = secrets.token_bytes(8)
+    return f"avatars/{UUID(bytes=nonce + _avatar_tag(secret, user_id, nonce))}"
+
+
+def _avatar_key_is_issued_to(secret: bytes, user_id: UUID, key: str) -> bool:
+    name = key.removeprefix("avatars/")
+    try:
+        parsed = UUID(name)
+    except ValueError:
+        return False
+    if str(parsed) != name:  # only the canonical spelling we issued
+        return False
+    raw = parsed.bytes
+    return hmac.compare_digest(raw[8:], _avatar_tag(secret, user_id, raw[:8]))
 
 
 def _hours(hours: int) -> timedelta:

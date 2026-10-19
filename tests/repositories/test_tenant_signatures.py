@@ -5,8 +5,14 @@ from app.repositories.share_link import ShareLinkRepository
 from app.repositories.trainer_player_link import TrainerPlayerLinkRepository
 
 # Documented tenancy exceptions: the share-link code is the capability; the approval lock is
-# scoped to the parent; the expiry sweep is a system job across tenants.
-_EXCEPTIONS = {"lock_by_code", "lock_by_id_for_parent", "expire_due"}
+# scoped to the parent; the expiry sweep is a system job across tenants; the batch link check
+# takes the trainer ids to test (tenant-scoped by the ids it is given, owner-scoped by the caller).
+_EXCEPTIONS = {
+    "lock_by_code",
+    "lock_by_id_for_parent",
+    "expire_due",
+    "active_trainer_ids_for_owner",
+}
 
 
 def test_tenant_scoped_methods_require_keyword_only_trainer_id() -> None:

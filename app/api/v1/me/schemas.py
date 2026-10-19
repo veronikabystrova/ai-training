@@ -132,7 +132,7 @@ class AvatarPresignRequest(BaseModel):
 
 class PresignResponse(BaseModel):
     upload_url: HttpUrl  # presigned PUT, constrains type and length
-    key: str  # server-chosen: avatars/{uuid7}
+    key: str  # server-chosen, bound to the caller: avatars/{uuid}
     expires_in: int  # seconds
     required_headers: dict[str, str]
 

@@ -102,7 +102,7 @@ async def presign_avatar(
     payload: AvatarPresignRequest, principal: PrincipalDep, service: UserServiceDep
 ) -> PresignResponse:
     key, presigned = await service.presign_avatar(
-        content_type=payload.content_type, content_length=payload.content_length
+        principal.user_id, content_type=payload.content_type, content_length=payload.content_length
     )
     return PresignResponse.model_validate(
         {

@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from uuid import UUID
 
 from sqlalchemy import exists, select, update
@@ -63,6 +64,26 @@ class TrainerPlayerLinkRepository:
             )
         )
         return bool(result.scalar())
+
+    async def active_trainer_ids_for_owner(
+        self, *, trainer_ids: Collection[UUID], owner_user_id: UUID
+    ) -> set[UUID]:
+        """The ``trainer_ids`` that ``has_active_link_for_owner`` accepts, in one query."""
+        trainer = aliased(User)
+        result = await self._s.execute(
+            select(TrainerPlayerLink.trainer_id)
+            .join(PlayerProfile, PlayerProfile.id == TrainerPlayerLink.player_profile_id)
+            .join(trainer, trainer.id == TrainerPlayerLink.trainer_id)
+            .where(
+                TrainerPlayerLink.trainer_id.in_(trainer_ids),
+                TrainerPlayerLink.status == LinkStatus.active,
+                PlayerProfile.owner_user_id == owner_user_id,
+                PlayerProfile.is_active,
+                trainer.status == UserStatus.active,
+            )
+            .distinct()
+        )
+        return set(result.scalars())
 
     async def active_profile_ids_for_caller(
         self, *, trainer_id: UUID, user_id: UUID, child: bool

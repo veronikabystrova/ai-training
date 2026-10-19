@@ -29,6 +29,7 @@ async def test_approval_expires_after_48h_boundary(
     parent = await make_user()
     trainer = await make_trainer()
     child = await make_dependent(parent=parent)
+    await link_player(trainer, child)
     approval = await make_approval(parent=parent, trainer=trainer, player=child)  # now + 48h
     executor = FakePurchaseExecutor()
     service = ApprovalService(

@@ -812,3 +812,50 @@ async def test_contexts_empty_for_player_without_links(
 ) -> None:
     r = await client.get(CONTEXTS, headers=bearer(principal_token(await make_user())))
     assert (r.status_code, r.json()) == (200, [])
+
+
+async def test_patch_replacing_existing_login_with_taken_email_409_keeps_old_login(
+    client: AsyncClient,
+    make_user: MakeUser,
+    make_dependent: MakeDependent,
+    principal_token: PrincipalToken,
+    db_session: AsyncSession,
+) -> None:
+    await make_user(email="taken@x.com")
+    parent = await make_user()
+    child = await make_dependent(parent=parent, with_login=True)
+    kid = await db_session.get(User, child.login_user_id)
+    assert kid is not None
+    old_email = kid.email
+
+    r = await client.patch(
+        f"{PLAYERS}/{child.id}",
+        json={"login": {"email": "taken@x.com", "password": STRONG}},
+        headers=bearer(principal_token(parent)),
+    )
+
+    assert (r.status_code, code(r)) == (409, "EMAIL_TAKEN")
+    await db_session.refresh(kid)
+    assert kid.email == old_email
+
+
+async def test_create_dependent_one_unlinked_trainer_among_valid_ones_404(
+    client: AsyncClient,
+    make_user: MakeUser,
+    make_player: MakePlayer,
+    make_trainer: MakeTrainer,
+    link_player: LinkPlayer,
+    principal_token: PrincipalToken,
+) -> None:
+    parent, trainer, _ = await parent_with_trainer(
+        make_user, make_player, make_trainer, link_player
+    )
+    stranger = await make_trainer()
+
+    r = await client.post(
+        PLAYERS,
+        json=dependent_body(trainer_ids=[str(trainer.id), str(stranger.id)]),
+        headers=bearer(principal_token(parent)),
+    )
+
+    assert (r.status_code, code(r)) == (404, "NOT_FOUND")

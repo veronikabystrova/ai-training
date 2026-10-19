@@ -204,8 +204,11 @@ class PlayerService:
     ) -> PlayerView:
         validate_dependent_age(data.birth_date, self._clock.today())
         trainer_ids = list(dict.fromkeys(data.trainer_ids))
-        for trainer_id in trainer_ids:
-            await self._require_trainer_of_owner(trainer_id, owner_user_id)
+        linked = await self._links.active_trainer_ids_for_owner(
+            trainer_ids=trainer_ids, owner_user_id=owner_user_id
+        )
+        if linked != set(trainer_ids):  # unknown, inactive and unrelated look the same: 404
+            raise NotFoundError()
         if not allow_duplicate:
             duplicate = await self._players.find_duplicate(
                 owner_user_id=owner_user_id,
@@ -220,7 +223,8 @@ class PlayerService:
         owner_profile = await self._profiles.get(owner_user_id)
         if owner_profile is None:
             raise UnauthorizedError()
-        # Policy and hashing precede the first write: argon2 must not run inside the transaction.
+        # Policy and hashing precede the first write, so no row lock is held while argon2 runs.
+        # (The earlier reads have begun a transaction, so a pooled connection is held meanwhile.)
         login_hash = await self._hash_login(data.login, data.display_name)
 
         login_user_id: UUID | None = None
@@ -401,7 +405,7 @@ class PlayerService:
             role=UserRole.player,
             status=UserStatus.active,
             is_email_verified=True,  # the parent vouches for the address
-            profile=Profile(first_name=first_name[:100], last_name=last_name),
+            profile=Profile(first_name=first_name, last_name=last_name),
         )
         try:
             async with self._session.begin_nested():

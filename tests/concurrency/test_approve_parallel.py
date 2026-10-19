@@ -11,9 +11,11 @@ from app.core.ids import new_id
 from app.models.identity import (
     ApprovalStatus,
     Gender,
+    LinkSource,
     PlayerProfile,
     Profile,
     PurchaseApproval,
+    TrainerPlayerLink,
     TrainerProfile,
     User,
     UserRole,
@@ -51,6 +53,11 @@ async def _seed(engine: AsyncEngine, clock: FakeClock) -> tuple[User, PurchaseAp
         )
         session.add(child)
         await session.flush()
+        session.add(
+            TrainerPlayerLink(
+                trainer_id=trainer.id, player_profile_id=child.id, source=LinkSource.parent_added
+            )
+        )
         approval = PurchaseApproval(
             player_profile_id=child.id,
             parent_user_id=parent.id,

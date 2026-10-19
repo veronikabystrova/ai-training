@@ -14,6 +14,13 @@ CONFIRM = "/api/v1/me/avatar/confirm"
 FIVE_MB = 5 * 1024 * 1024
 
 
+async def issued_key(client: AsyncClient, headers: dict[str, str]) -> str:
+    r = await client.put(
+        AVATAR, json={"content_type": "image/png", "content_length": 1000}, headers=headers
+    )
+    return str(r.json()["key"])
+
+
 def code(response: Any) -> str:
     return str(response.json()["error"]["code"])
 
@@ -63,7 +70,7 @@ async def test_avatar_confirm_head_checks_then_persists(
 ) -> None:
     user = await make_user()
     headers = bearer(principal_token(user))
-    key = f"avatars/{uuid4()}"
+    key = await issued_key(client, headers)
     await storage.put(key, b"x" * 100, "image/jpeg")
 
     r = await client.post(CONFIRM, json={"avatar_key": key}, headers=headers)
@@ -89,9 +96,9 @@ async def test_avatar_confirm_missing_key_404_wrong_type_or_size_invalid_avatar(
     missing = await client.post(CONFIRM, json={"avatar_key": f"avatars/{uuid4()}"}, headers=headers)
     assert (missing.status_code, code(missing)) == (404, "NOT_FOUND")
 
-    gif = f"avatars/{uuid4()}"
+    gif = await issued_key(client, headers)
     await storage.put(gif, b"x", "image/gif")
-    big = f"avatars/{uuid4()}"
+    big = await issued_key(client, headers)
     await storage.put(big, b"x" * (FIVE_MB + 1), "image/png")
     for key in (gif, big):
         r = await client.post(CONFIRM, json={"avatar_key": key}, headers=headers)
@@ -99,6 +106,32 @@ async def test_avatar_confirm_missing_key_404_wrong_type_or_size_invalid_avatar(
     profile = await db_session.get(Profile, user.id)
     assert profile is not None
     assert profile.avatar_key is None
+
+
+async def test_avatar_confirm_key_must_be_issued_to_the_caller_404(
+    client: AsyncClient,
+    make_user: MakeUser,
+    principal_token: PrincipalToken,
+    storage: FakeObjectStorage,
+    db_session: AsyncSession,
+) -> None:
+    owner, other = await make_user(), await make_user()
+    owner_headers = bearer(principal_token(owner))
+    other_headers = bearer(principal_token(other))
+    key = await issued_key(client, owner_headers)
+    await storage.put(key, b"x" * 100, "image/png")
+    forged = f"avatars/{uuid4()}"  # never issued by presign
+    await storage.put(forged, b"x" * 100, "image/png")
+
+    for headers, avatar_key in ((other_headers, key), (owner_headers, forged)):
+        r = await client.post(CONFIRM, json={"avatar_key": avatar_key}, headers=headers)
+        assert (r.status_code, code(r)) == (404, "NOT_FOUND")
+    other_profile = await db_session.get(Profile, other.id)
+    assert other_profile is not None
+    assert other_profile.avatar_key is None
+    assert (
+        await client.post(CONFIRM, json={"avatar_key": key}, headers=owner_headers)
+    ).status_code == 200
 
 
 async def test_avatar_confirm_rejects_keys_outside_the_avatar_namespace(
