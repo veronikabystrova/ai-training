@@ -15,6 +15,14 @@ async def test_delete_storage_object_removes_the_object(
     assert set(storage.objects) == {"logos/keep"}
 
 
+async def test_delete_storage_object_accepts_the_incoming_prefix(
+    ctx: Ctx, storage: FakeObjectStorage
+) -> None:
+    await storage.put("incoming/logos/raw", b"<svg/>", "image/svg+xml")
+    await identity_jobs.delete_storage_object(ctx, key="incoming/logos/raw")
+    assert storage.objects == {}
+
+
 async def test_delete_storage_object_is_idempotent_for_a_missing_object(
     ctx: Ctx, storage: FakeObjectStorage
 ) -> None:

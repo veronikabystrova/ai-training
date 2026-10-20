@@ -7,7 +7,7 @@ is harmless. Only keys under the media prefixes are accepted: the job must never
 
 from app.core.storage import ObjectStorage
 
-MEDIA_PREFIXES = ("avatars/", "logos/")
+MEDIA_PREFIXES = ("avatars/", "logos/", "incoming/")
 
 
 class StorageCleanupService:

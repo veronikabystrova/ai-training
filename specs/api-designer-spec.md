@@ -577,11 +577,11 @@ Deactivates (soft). **Trainer only** (coach ⇒ 403, per the §6 matrix; coaches
 
 ### [TASK-001] POST /trainer/branding/logo (2026-10-18)
 
-Presign: body `{content_type: Literal["image/png","image/svg+xml","image/webp"], content_length: int <= 2 MB}`. **Response:** `200 PresignResponse` (key `logos/{uuid7}`). **Access:** trainer. **Status Codes:** 200 · 403 · 422.
+Presign: body `{content_type: Literal["image/png","image/svg+xml","image/webp"], content_length: int <= 2 MB}`. **Response:** `200 PresignResponse` (key `incoming/logos/{uuid-shaped}`, a non-served upload prefix). **Access:** trainer. **Status Codes:** 200 · 403 · 422.
 
 ### [TASK-001] POST /trainer/branding/logo/confirm (2026-10-18)
 
-Body `{logo_key: str pattern ^logos/[0-9a-f-]{36}$}`. HEAD re-check; SVG passes `sanitize_svg` and is re-serialised before persist. **Response:** `200 BrandingResponse`.
+Body `{logo_key: str pattern ^incoming/logos/[0-9a-f-]{36}$}`. HEAD re-check; the object is copied to a fresh served `logos/` key (an SVG passes `sanitize_svg` and is re-serialised) and the raw `incoming/` key is deleted after commit. **Response:** `200 BrandingResponse`.
 **Status Codes:** 200 · 403 · 404 · 422 `INVALID_LOGO`.
 
 ---
@@ -752,6 +752,10 @@ No body. Creates `impersonation_sessions` (≤ 60 min); token `sub=target, act=a
 11. **Email links (assumption):** built by `Settings.frontend_url(route, token=...)` from `public_base_url` (the single frontend origin, also used for share-link URLs). Frontend routes: `/setup-password`, `/verify-email`, `/reset-password`, `/confirm-email-change`, each taking `?token=<raw token>`.
 12. **`notify_parent_approval_request`** is kept and registered, but its enqueue site belongs to the purchase-approval creation flow (another epic); nothing in Epic-01 enqueues it.
 13. **`delete_storage_object`** (kwargs: `key` only): best-effort removal of a replaced or erased avatar/logo object, enqueued after commit when a confirmed avatar or logo replaces an older key, and when erasure clears an avatar or a trainer logo. There is no remove-logo route. Storage delete is idempotent (a missing object is success), keys outside `avatars/` and `logos/` are refused, and retries use the standard backoff.
+
+### Phase G review fixes (2026-10-20, confirmed by user)
+
+18. **Logo uploads never touch a served prefix.** Presign issues `incoming/logos/{uuid-shaped}` (same HMAC key shape). Confirm copies the bytes (SVG sanitised) to a fresh `logos/` key that was never presigned, commits, then enqueues `delete_storage_object` for the raw `incoming/` key (and for the replaced logo). `StorageCleanupService` accepts `avatars/`, `logos/` and `incoming/`. **Infra requirements:** (a) an S3 lifecycle rule expiring `incoming/` objects after 1 day, so unconfirmed uploads do not linger; (b) the media origin MUST serve only `avatars/` and `logos/`, and send `Content-Security-Policy: sandbox` (plus `X-Content-Type-Options: nosniff`).
 
 ### OpenAPI conformance and load (Task 28 deltas, 2026-10-20)
 

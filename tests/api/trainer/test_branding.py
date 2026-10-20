@@ -109,8 +109,8 @@ async def test_logo_presign_type_and_2mb_limit(
         )
         assert r.status_code == 200
         body = r.json()
-        assert body["key"].startswith("logos/")
-        assert len(body["key"]) == len("logos/") + 36
+        assert body["key"].startswith("incoming/logos/")
+        assert len(body["key"]) == len("incoming/logos/") + 36
         assert body["upload_url"].endswith(body["key"])
         assert body["required_headers"] == {"Content-Type": kind}
         assert body["expires_in"] == 300
@@ -138,11 +138,12 @@ async def test_logo_confirm_png_persists_key(
 
     r = await client.post(CONFIRM, json={"logo_key": key}, headers=headers)
     assert r.status_code == 200
-    assert r.json()["logo_url"] == f"https://media.example.com/{key}"
     profile = await db_session.get(TrainerProfile, trainer.id)
-    assert profile is not None
-    assert profile.logo_key == key
-    assert storage.objects[key][0] == b"\x89PNG...."  # raster images are not rewritten
+    assert profile is not None and profile.logo_key is not None
+    assert profile.logo_key.startswith("logos/")  # the served key, never the upload key
+    assert r.json()["logo_url"] == f"https://media.example.com/{profile.logo_key}"
+    # raster images are copied byte for byte, not rewritten
+    assert storage.objects[profile.logo_key] == (b"\x89PNG....", "image/png")
 
 
 async def test_logo_confirm_svg_is_sanitised_and_reserialised(
@@ -255,7 +256,7 @@ async def test_logo_confirm_missing_key_404_coach_403_foreign_key_404(
 
     key = await issued_key(client, headers)
     await storage.put(key, b"x" * 10, "image/png")
-    forged = f"logos/{uuid4()}"
+    forged = f"incoming/logos/{uuid4()}"
     await storage.put(forged, b"x" * 10, "image/png")
     for hdrs, logo_key in ((other_headers, key), (headers, forged)):
         r = await client.post(CONFIRM, json={"logo_key": logo_key}, headers=hdrs)
@@ -276,37 +277,74 @@ async def test_logo_confirm_missing_key_404_coach_403_foreign_key_404(
     assert (bad.status_code, code(bad)) == (422, "VALIDATION_ERROR")
 
 
-async def test_logo_replace_enqueues_deletion_of_the_old_logo_only(
+async def _confirm_logo(
+    client: AsyncClient,
+    headers: dict[str, str],
+    storage: FakeObjectStorage,
+    kind: str = "image/png",
+    data: bytes = b"\x89PNG....",
+) -> tuple[str, str]:
+    """Presign, upload and confirm; returns ``(raw_key, served_key)``."""
+    key = await issued_key(client, headers, kind)
+    await storage.put(key, data, kind)
+    r = await client.post(CONFIRM, json={"logo_key": key}, headers=headers)
+    assert r.status_code == 200, r.text
+    return key, str(r.json()["logo_url"]).removeprefix("https://media.example.com/")
+
+
+async def test_logo_upload_key_is_not_under_a_served_prefix(
+    client: AsyncClient, make_trainer: MakeUser, principal_token: PrincipalToken
+) -> None:
+    headers = bearer(principal_token(await make_trainer()))
+    for kind in ("image/png", "image/svg+xml", "image/webp"):
+        key = await issued_key(client, headers, kind)
+        assert key.startswith("incoming/")
+        assert not key.startswith(("logos/", "avatars/"))
+
+
+async def test_logo_confirm_enqueues_deletion_of_the_raw_incoming_key(
     client: AsyncClient,
     make_trainer: MakeUser,
     principal_token: PrincipalToken,
     storage: FakeObjectStorage,
-    db_session: AsyncSession,
     jobs: FakeJobQueue,
 ) -> None:
-    trainer = await make_trainer()
-    headers = bearer(principal_token(trainer))
-    first = await issued_key(client, headers)
-    await storage.put(first, b"\x89PNG....", "image/png")
-    assert (
-        await client.post(CONFIRM, json={"logo_key": first}, headers=headers)
-    ).status_code == 200
-    assert jobs.enqueued == []  # no previous logo
+    headers = bearer(principal_token(await make_trainer()))
+    for kind in ("image/svg+xml", "image/png"):
+        jobs.enqueued.clear()
+        raw, served = await _confirm_logo(client, headers, storage, kind, CLEAN_SVG)
+        assert served.startswith("logos/") and served != raw
+        deleted = [j.kwargs["key"] for j in jobs.enqueued if j.name == "delete_storage_object"]
+        assert raw in deleted
 
-    second = await issued_key(client, headers)
-    await storage.put(second, b"\x89PNG....", "image/png")
-    assert (
-        await client.post(CONFIRM, json={"logo_key": second}, headers=headers)
-    ).status_code == 200
-    assert [(j.name, j.kwargs) for j in jobs.enqueued] == [
-        ("delete_storage_object", {"key": first})
-    ]
 
-    jobs.enqueued.clear()  # re-confirming the live key must not delete it
-    assert (
-        await client.post(CONFIRM, json={"logo_key": second}, headers=headers)
-    ).status_code == 200
-    assert jobs.enqueued == []
+async def test_logo_confirm_rejects_a_served_key_as_the_upload_key(
+    client: AsyncClient,
+    make_trainer: MakeUser,
+    principal_token: PrincipalToken,
+    storage: FakeObjectStorage,
+) -> None:
+    headers = bearer(principal_token(await make_trainer()))
+    _, served = await _confirm_logo(client, headers, storage)
+    r = await client.post(CONFIRM, json={"logo_key": served}, headers=headers)
+    assert (r.status_code, code(r)) == (422, "VALIDATION_ERROR")
+
+
+async def test_logo_replace_enqueues_deletion_of_the_old_logo_and_the_raw_upload(
+    client: AsyncClient,
+    make_trainer: MakeUser,
+    principal_token: PrincipalToken,
+    storage: FakeObjectStorage,
+    jobs: FakeJobQueue,
+) -> None:
+    headers = bearer(principal_token(await make_trainer()))
+    first_raw, first_served = await _confirm_logo(client, headers, storage)
+    assert [j.kwargs["key"] for j in jobs.enqueued] == [first_raw]  # no previous logo
+
+    jobs.enqueued.clear()
+    second_raw, _ = await _confirm_logo(client, headers, storage)
+    assert sorted(j.kwargs["key"] for j in jobs.enqueued) == sorted([first_served, second_raw])
+    assert all(j.name == "delete_storage_object" for j in jobs.enqueued)
 
 
 async def test_logo_replace_with_svg_deletes_the_old_served_key(
@@ -323,9 +361,5 @@ async def test_logo_replace_with_svg_deletes_the_old_served_key(
     profile.logo_key = "logos/old-served"
     await db_session.flush()
     headers = bearer(principal_token(trainer))
-    key = await issued_key(client, headers, "image/svg+xml")
-    await storage.put(key, CLEAN_SVG, "image/svg+xml")
-    assert (await client.post(CONFIRM, json={"logo_key": key}, headers=headers)).status_code == 200
-    assert [(j.name, j.kwargs) for j in jobs.enqueued] == [
-        ("delete_storage_object", {"key": "logos/old-served"})
-    ]
+    raw, _ = await _confirm_logo(client, headers, storage, "image/svg+xml", CLEAN_SVG)
+    assert sorted(j.kwargs["key"] for j in jobs.enqueued) == sorted(["logos/old-served", raw])

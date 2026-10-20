@@ -1,8 +1,10 @@
 """Trainer branding: business name, colours and logo (also read by the public endpoint).
 
 The service owns the transaction. Logo uploads mirror the avatar flow: presign a key bound to
-the trainer, upload straight to storage, then confirm; an SVG is sanitised and re-serialised
-before the key is persisted.
+the trainer, upload straight to storage, then confirm. Uploads land under ``incoming/``, which
+the media origin does not serve; confirm copies the bytes (an SVG is sanitised and re-serialised
+first) to a fresh ``logos/`` key and deletes the raw object, so client-controlled bytes are never
+publicly served. Unconfirmed ``incoming/`` objects must expire via an S3 lifecycle rule.
 """
 
 from collections.abc import Mapping
@@ -25,7 +27,8 @@ LOGO_CONTENT_TYPES = frozenset({"image/png", "image/svg+xml", "image/webp"})
 LOGO_MAX_BYTES = 2 * 1024 * 1024
 BRANDING_FIELDS = frozenset({"business_name", "brand_primary_color", "brand_secondary_color"})
 
-_LOGO_PREFIX = "logos"
+_LOGO_PREFIX = "logos"  # served by the media origin
+_INCOMING_LOGO_PREFIX = "incoming/logos"  # presigned upload target: never served
 _LOGO_PURPOSE = "logo"
 _SERVED_LOGO_PURPOSE = "logo-served"  # a different MAC domain: never valid as an upload key
 
@@ -96,7 +99,7 @@ class BrandingService:
         self, trainer_id: UUID, *, content_type: str, content_length: int
     ) -> tuple[str, PresignedPut]:
         key = issue_bound_key(
-            self._secret, prefix=_LOGO_PREFIX, purpose=_LOGO_PURPOSE, owner_id=trainer_id
+            self._secret, prefix=_INCOMING_LOGO_PREFIX, purpose=_LOGO_PURPOSE, owner_id=trainer_id
         )
         presigned = await self._storage.presign_put(
             key, content_type, content_length, self._settings.presign_ttl_seconds
@@ -105,7 +108,11 @@ class BrandingService:
 
     async def confirm_logo(self, trainer_id: UUID, *, key: str) -> BrandingView:
         if not key_is_bound_to(
-            self._secret, prefix=_LOGO_PREFIX, purpose=_LOGO_PURPOSE, owner_id=trainer_id, key=key
+            self._secret,
+            prefix=_INCOMING_LOGO_PREFIX,
+            purpose=_LOGO_PURPOSE,
+            owner_id=trainer_id,
+            key=key,
         ):
             raise NotFoundError()  # not issued to this trainer: same answer as a missing object
         meta = await self._storage.head(key)
@@ -115,23 +122,21 @@ class BrandingService:
             raise UnprocessableError(
                 "INVALID_LOGO", "Logo must be a png, svg or webp image of at most 2 MB"
             )
-        served_key = key
+        # Never serve what the client uploaded: copy to a fresh key that was never presigned
+        # (the upload URL stays valid for its TTL and could otherwise overwrite the served
+        # object). An SVG is re-serialised through the allowlist sanitiser on the way.
+        data = await self._storage.get(key)
         if meta.content_type == "image/svg+xml":
-            # Never serve what the client uploaded: only the re-serialised allowlist copy, under
-            # a fresh key that was never presigned (the upload URL stays valid for its TTL and
-            # could otherwise overwrite the sanitised object).
-            clean = sanitize_svg(await self._storage.get(key))
-            served_key = issue_bound_key(
-                self._secret,
-                prefix=_LOGO_PREFIX,
-                purpose=_SERVED_LOGO_PURPOSE,
-                owner_id=trainer_id,
-            )
-            await self._storage.put(served_key, clean, "image/svg+xml")
+            data = sanitize_svg(data)
+        served_key = issue_bound_key(
+            self._secret, prefix=_LOGO_PREFIX, purpose=_SERVED_LOGO_PURPOSE, owner_id=trainer_id
+        )
+        await self._storage.put(served_key, data, meta.content_type)
         profile = await self._profile(trainer_id)
         replaced = profile.logo_key
         profile.logo_key = served_key
         await self._session.commit()
-        if replaced is not None and replaced != served_key:
+        await enqueue_best_effort(self._jobs, DELETE_OBJECT_JOB, key=key)
+        if replaced is not None:
             await enqueue_best_effort(self._jobs, DELETE_OBJECT_JOB, key=replaced)
         return self._view(profile)

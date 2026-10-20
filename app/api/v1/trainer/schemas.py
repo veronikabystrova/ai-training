@@ -123,7 +123,7 @@ class LogoPresignRequest(BaseModel):
 
 class LogoPresignResponse(BaseModel):
     upload_url: HttpUrl  # presigned PUT, constrains type and length
-    key: str  # server-chosen, bound to the trainer: logos/{uuid}
+    key: str  # server-chosen, bound to the trainer: incoming/logos/{uuid}
     expires_in: int  # seconds
     required_headers: dict[str, str]
 
@@ -131,4 +131,4 @@ class LogoPresignResponse(BaseModel):
 class LogoConfirmRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    logo_key: str = Field(pattern=r"^logos/[0-9a-f-]{36}$")
+    logo_key: str = Field(pattern=r"^incoming/logos/[0-9a-f-]{36}$")
