@@ -9,7 +9,6 @@ from fastapi.openapi.utils import get_openapi
 from app.core.errors import ErrorResponse
 
 _ENVELOPE_REF = {"$ref": "#/components/schemas/ErrorResponse"}
-_ENVELOPE_CONTENT = {"application/json": {"schema": _ENVELOPE_REF}}
 
 
 def _describe(status: int) -> str:
@@ -44,7 +43,8 @@ def install_openapi(app: FastAPI) -> None:
                 responses.setdefault("500", {"description": _describe(500)})
                 for code, response in responses.items():
                     if code.isdigit() and int(code) >= 400:
-                        response["content"] = _ENVELOPE_CONTENT
+                        # a fresh dict per response: nothing may be shared between operations
+                        response["content"] = {"application/json": {"schema": dict(_ENVELOPE_REF)}}
         app.openapi_schema = schema
         return schema
 

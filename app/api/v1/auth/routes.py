@@ -254,10 +254,13 @@ def _exactly_one_source(
 @router.post(
     "/register",
     status_code=201,
-    response_model=AuthResponse | LinkedResponse,
+    # ``response_model=None`` + per-code models: FastAPI cannot attach a model to the default
+    # status otherwise, and would document 201 as the union. The handler's body is unchanged.
+    response_model=None,
     summary="Register via ShareLink or camp submission",
     dependencies=[Depends(rate_limit(RouteClass.register_ip))],
     responses={
+        201: {"model": AuthResponse, "description": "Account created and signed in"},
         200: {"model": LinkedResponse, "description": "Authenticated user linked"},
         403: {"description": "LINK_EMAIL_MISMATCH, CHILD_CANNOT_REDEEM or EMAIL_NOT_VERIFIED"},
         404: {"description": "SHARE_LINK_INVALID or NOT_FOUND"},

@@ -158,3 +158,28 @@ def test_two_success_routes_document_both_codes(openapi: dict[str, Any]) -> None
         ops[("POST", _norm(f"{API}/auth/verify-email/resend"))]["responses"]
     )
     assert {"200", "201"} <= set(ops[("POST", _norm(f"{API}/auth/register"))]["responses"])
+
+
+def _body_schema(response: dict[str, Any]) -> dict[str, Any]:
+    schema: dict[str, Any] = response["content"]["application/json"]["schema"]
+    return schema
+
+
+def test_register_documents_a_separate_body_schema_per_success_code(
+    openapi: dict[str, Any],
+) -> None:
+    responses = _operations(openapi)[("POST", _norm(f"{API}/auth/register"))]["responses"]
+    assert _body_schema(responses["201"]) == {"$ref": "#/components/schemas/AuthResponse"}
+    assert _body_schema(responses["200"]) == {"$ref": "#/components/schemas/LinkedResponse"}
+
+
+def test_error_responses_do_not_share_one_content_object(openapi: dict[str, Any]) -> None:
+    contents = [
+        response["content"]
+        for op in _operations(openapi).values()
+        for code, response in op["responses"].items()
+        if code.isdigit() and int(code) >= 400
+    ]
+    assert len(contents) > 100
+    assert len({id(c) for c in contents}) == len(contents)
+    assert len({id(_body_schema({"content": c})) for c in contents}) == len(contents)
