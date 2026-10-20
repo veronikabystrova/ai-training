@@ -47,7 +47,7 @@ class PasswordHasher:
     """Argon2id hashing in worker threads, bounded by a semaphore (architecture §6)."""
 
     def __init__(
-        self, *, time_cost: int = 3, memory_kib: int = 65536, parallelism: int = 1
+        self, *, time_cost: int = 3, memory_kib: int = 65536, parallelism: int = 4
     ) -> None:
         self._h = _Argon2(time_cost=time_cost, memory_cost=memory_kib, parallelism=parallelism)
         self._dummy = self._h.hash("dummy-password-for-constant-time")

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     hash_salt: SecretStr = Field(min_length=16)  # salt for ip/user-agent hashes; no default
     argon2_time_cost: int = 3
     argon2_memory_kib: int = 65536
-    argon2_parallelism: int = 1  # p=4 verifies in ~64 ms on multi-core hosts; p=1 keeps >=100 ms
+    argon2_parallelism: int = 4  # architecture spec: argon2id t=3, m=64 MiB, p=4
     # Frontend origin: share-link URLs and the links in emails (the "frontend_base_url").
     public_base_url: str = "https://app.example.com"
     s3_bucket: str = "app-media"

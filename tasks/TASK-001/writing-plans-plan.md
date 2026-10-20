@@ -1758,8 +1758,8 @@ async def test_no_response_schema_exposes_secret_fields(openapi) -> None:
 
 async def test_logs_never_contain_raw_tokens_or_passwords(client, caplog, ...) -> None: ...
 
-def test_argon2_verify_takes_at_least_100ms_with_production_params() -> None:
-    ...  # time one verify with Settings defaults; assert >= 0.1 s
+async def test_argon2_defaults_match_spec_parameters() -> None:
+    ...  # Settings + PasswordHasher defaults hash as argon2id t=3, m=65536, p=4 (parse the encoded hash; no timing)
 ```
 
 **Step 2:** Run: `uv run pytest tests/e2e tests/unit/test_argon2_benchmark.py` Expected: FAIL for any behaviour not yet satisfied (fix in the owning service, not in the test)
@@ -1769,6 +1769,8 @@ def test_argon2_verify_takes_at_least_100ms_with_production_params() -> None:
 **Step 4:** Run: `uv run pytest tests/e2e tests/unit`. Expected: PASS
 
 **Step 5:** `git add app tests && git commit -m "test: add rate limit, TTL boundary and privacy sweeps"`
+
+**Decision note (user, 2026-10-20):** the 100 ms argon2 verify floor came only from this plan, not from the requirements. Parallelism is back at the spec value (`specs/architect-architecture.md` line 222: argon2id t=3, m=64 MiB, p=4), and the wall-clock benchmark is replaced by a deterministic test of the default parameters (no timing assertion).
 
 ---
 
