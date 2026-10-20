@@ -2,7 +2,9 @@
 
 Every method re-reads current state by id and skips when it no longer applies (token used or
 expired, approval decided, account gone), then sends at most once per idempotency key so an
-ARQ retry never doubles a mail. A failed send releases its claim so the retry can send.
+ARQ retry does not double a mail, except when a job times out after the provider accepted it
+(no provider idempotency key yet; accepted risk, spec decision 21). A failed send releases its
+claim so the retry can send.
 
 Raw one-time tokens arrive only as job kwargs; the idempotency key uses their hash.
 """

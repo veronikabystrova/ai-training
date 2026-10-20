@@ -1690,6 +1690,8 @@ Also cover `send_trainer_invite`, `send_welcome_email`, `send_verification_email
 **Step 4:** Run: `uv run pytest tests/jobs`. Expected: PASS. **Step 5:** `git add app tests && git commit -m "feat(jobs): add ARQ worker, identity jobs and cron registry"`
 
 > **Decisions (2026-10-19):** the enqueued child job is `notify_child_decision` (spec name); `send_email_change` is kept (goes to the new address); the purge keeps its scope (expired refresh tokens, idempotency keys, one-time tokens); email links come from `Settings.frontend_url` over `public_base_url` plus route constants; `notify_parent_approval_request` is kept, its enqueue site belongs to the purchase-approval flow (other epic). Added `delete_storage_object` (kwargs `key`): best-effort S3 delete after commit when a logo/avatar is replaced or erased (closes the Task 24 deferral); no remove-logo route exists. Spec: `Resolved decisions` 8-13.
+>
+> **Phase G review decisions (2026-10-20):** `keep_result = 0` so job kwargs (raw tokens) are not retained in Redis; permanent errors (`ValueError`/`TypeError`/`KeyError`) dead-letter on the first attempt; cron jobs log `job.dead_letter` on failure; `notify_parent_approval_request` skips erased/inactive parents. Accepted risk: an email may be sent twice if a job times out after the provider accepted it (no provider idempotency key yet). Spec: decisions 19-21.
 
 ---
 
@@ -1775,6 +1777,8 @@ async def test_argon2_defaults_match_spec_parameters() -> None:
 ---
 
 ### Task 28: OpenAPI conformance with the spec, load scenarios, docs
+
+> **Phase G review decisions (2026-10-20):** `POST /auth/register` uses `response_model=None` + per-code `responses` so `201` is `AuthResponse` and `200` is `LinkedResponse` (spec decision 15 rewritten); error responses get a fresh `content` dict each; k6 admin start time is derived from any `DURATION` unit; the cross-tenant gate also checks list routes for leaks. Logo uploads go to non-served `incoming/logos/` and are copied to `logos/` on confirm (decision 18; infra: S3 lifecycle on `incoming/`, `Content-Security-Policy: sandbox` on the media origin).
 
 **Files:**
 - Create: `tests/test_openapi_contract.py`, `tests/load/seed_10k_users.py`, `tests/load/scenarios.js` (k6), `README.md` section
