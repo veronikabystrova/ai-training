@@ -120,7 +120,12 @@ class NotificationService:
                 if approval is None
                 else await UserRepository(session).get(approval.parent_user_id)
             )
-        if approval is None or parent is None or approval.status is not ApprovalStatus.pending:
+        if (
+            approval is None
+            or parent is None
+            or approval.status is not ApprovalStatus.pending
+            or parent.status in (UserStatus.deleted, UserStatus.inactive)
+        ):
             return self._skip("notify_parent_approval_request")
         return await self._send_once(
             f"approval:{approval_id}:requested",

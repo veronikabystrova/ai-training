@@ -188,6 +188,26 @@ async def test_notify_parent_approval_request_only_while_pending(
     assert len(email.sent) == 1
 
 
+@pytest.mark.parametrize("status", [UserStatus.deleted, UserStatus.inactive])
+async def test_notify_parent_approval_request_skips_an_erased_or_inactive_parent(
+    status: UserStatus,
+    ctx: Ctx,
+    make_user: MakeUser,
+    make_trainer: MakeTrainer,
+    make_dependent: MakeDependent,
+    link_player: LinkPlayer,
+    make_approval: MakeApproval,
+    email: FakeEmailSender,
+) -> None:
+    parent, trainer = await make_user(), await make_trainer()
+    child = await make_dependent(parent=parent)
+    await link_player(trainer, child)
+    approval = await make_approval(parent=parent, trainer=trainer, player=child)
+    parent.status = status
+    await identity_jobs.notify_parent_approval_request(ctx, approval_id=str(approval.id))
+    assert email.sent == []
+
+
 async def test_notify_child_decision_tells_the_child_login_once_per_status(
     ctx: Ctx,
     make_user: MakeUser,
