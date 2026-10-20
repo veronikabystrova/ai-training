@@ -17,8 +17,6 @@ from tests.permissions.matrix import (
     is_tenant_scoped,
 )
 
-pytestmark = MODULE_LOOP
-
 
 def registered_routes(app: FastAPI) -> set[tuple[str, str]]:
     """``(method, path)`` of every versioned route, read from the OpenAPI document."""
@@ -74,6 +72,7 @@ def test_cross_tenant_roles_are_allowed_in_the_matrix() -> None:
     assert bad == []
 
 
+@MODULE_LOOP
 @pytest.mark.parametrize("spec", MATRIX, ids=[c.id for c in MATRIX])
 async def test_matrix_cell(spec: Cell, cell_world: World) -> None:
     w = cell_world

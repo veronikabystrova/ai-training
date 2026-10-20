@@ -469,7 +469,7 @@ async def test_cron_failure_logs_dead_letter_and_reraises() -> None:
 
 
 async def test_every_cron_job_is_wrapped_with_the_failure_log() -> None:
-    from app.jobs.worker import _every_five_minutes  # noqa: PLC0415
+    from app.jobs.worker import _every_five_minutes
 
     async def boom(ctx: Ctx) -> None:
         raise ConnectionError
