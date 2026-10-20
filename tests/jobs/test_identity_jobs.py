@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.ids import new_id
 from app.jobs import identity_jobs
 from app.jobs.identity_jobs import Ctx
-from app.jobs.worker import MAX_TRIES, WorkerSettings, with_retries
+from app.jobs.worker import MAX_TRIES, WorkerSettings, log_failures, with_retries
 from app.models.identity import (
     ApprovalStatus,
     ImpersonationSession,
@@ -406,3 +406,57 @@ async def test_no_dead_letter_before_the_last_attempt() -> None:
     with structlog.testing.capture_logs() as logs, pytest.raises(Retry):
         await with_retries(failing)({"job_try": MAX_TRIES - 1})
     assert [e for e in logs if e["event"] == "job.dead_letter"] == []
+
+
+async def test_no_job_result_is_retained_in_redis() -> None:
+    # ARQ stores finished jobs (kwargs included: raw tokens, new emails) for keep_result seconds.
+    assert WorkerSettings.keep_result == 0
+    assert WorkerSettings.keep_result_forever is False
+    for function in WorkerSettings.functions:
+        assert function.keep_result_s == 0, function.name
+        assert not function.keep_result_forever, function.name
+    for cron_job in WorkerSettings.cron_jobs:
+        assert not cron_job.keep_result_s, cron_job.name
+        assert not cron_job.keep_result_forever, cron_job.name
+
+
+@pytest.mark.parametrize("error", [ValueError("not a media key"), TypeError(), KeyError("x")])
+async def test_permanent_errors_dead_letter_on_the_first_attempt_without_retry(
+    error: Exception,
+) -> None:
+    async def bad_input(ctx: Ctx, **kwargs: str) -> None:
+        raise error
+
+    with structlog.testing.capture_logs() as logs, pytest.raises(type(error)):
+        await with_retries(bad_input)({"job_try": 1, "job_id": "j1"}, token="raw")
+    [entry] = [e for e in logs if e["event"] == "job.dead_letter"]
+    assert (entry["job"], entry["attempts"], entry["error_type"]) == (
+        "bad_input",
+        1,
+        type(error).__name__,
+    )
+    assert "raw" not in str(logs)
+
+
+async def test_cron_failure_logs_dead_letter_and_reraises() -> None:
+    async def purge_expired_tokens(ctx: Ctx) -> None:
+        raise ConnectionError("db down")
+
+    with structlog.testing.capture_logs() as logs, pytest.raises(ConnectionError):
+        await log_failures(purge_expired_tokens)({"job_id": "c1"})
+    [entry] = [e for e in logs if e["event"] == "job.dead_letter"]
+    assert (entry["job"], entry["error_type"]) == ("purge_expired_tokens", "ConnectionError")
+
+
+async def test_every_cron_job_is_wrapped_with_the_failure_log() -> None:
+    from app.jobs.worker import _every_five_minutes  # noqa: PLC0415
+
+    async def boom(ctx: Ctx) -> None:
+        raise ConnectionError
+
+    boom.__name__ = "expire_purchase_approvals"
+    with structlog.testing.capture_logs() as logs, pytest.raises(ConnectionError):
+        await _every_five_minutes(boom).coroutine({})
+    assert [e["event"] for e in logs] == ["job.dead_letter"]
+    for cron_job in WorkerSettings.cron_jobs:
+        assert getattr(cron_job.coroutine, "__wrapped__", None) is not None, cron_job.name

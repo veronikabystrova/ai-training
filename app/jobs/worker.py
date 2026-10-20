@@ -5,7 +5,12 @@ Run with ``arq app.jobs.worker.WorkerSettings``.
 ARQ retries only when a job raises ``arq.Retry``, so each job is wrapped: a failure before the
 last attempt becomes ``Retry(defer=2 ** attempt)`` seconds; a failure on the last attempt writes
 a structured dead-letter log (job name, attempt count, error type; never kwargs, which hold raw
-tokens) and propagates so ARQ records the job as failed.
+tokens) and propagates so ARQ records the job as failed. Errors that can never succeed on a
+retry (bad ids, bad keys, missing ctx entries) are dead-lettered on the first attempt. Cron jobs
+are not retried (the next tick re-runs them) but log the same ``job.dead_letter`` event.
+
+No job result is kept in Redis (``keep_result = 0``): ARQ would otherwise store each finished
+job's kwargs, i.e. raw one-time tokens and new emails, for an hour.
 """
 
 import functools
@@ -35,6 +40,10 @@ from app.services.storage_cleanup_service import StorageCleanupService
 
 MAX_TRIES = 5
 
+# Deterministic input errors: ``ValueError`` (bad UUID, "not a media key"), ``TypeError`` (bad
+# kwargs) and ``KeyError`` (missing ctx entry) fail identically on every attempt.
+PERMANENT_ERRORS = (ValueError, TypeError, KeyError)
+
 Job = Callable[..., Awaitable[None]]
 
 _EVENT_JOBS: tuple[Job, ...] = (
@@ -59,16 +68,34 @@ def with_retries(job: Job) -> Job:
             await job(ctx, **kwargs)
         except Exception as exc:
             attempt = int(ctx["job_try"])
-            if attempt >= MAX_TRIES:
-                structlog.get_logger(__name__).error(
-                    "job.dead_letter",
-                    job=job.__name__,
-                    job_id=ctx.get("job_id"),
-                    attempts=attempt,
-                    error_type=type(exc).__name__,
-                )
+            if attempt >= MAX_TRIES or isinstance(exc, PERMANENT_ERRORS):
+                _dead_letter(job, ctx, attempts=attempt, exc=exc)
                 raise
             raise Retry(defer=2**attempt) from exc
+
+    return wrapper
+
+
+def _dead_letter(job: Job, ctx: Ctx, *, attempts: int, exc: Exception) -> None:
+    structlog.get_logger(__name__).error(
+        "job.dead_letter",
+        job=job.__name__,
+        job_id=ctx.get("job_id"),
+        attempts=attempts,
+        error_type=type(exc).__name__,
+    )
+
+
+def log_failures(job: Job) -> Job:
+    """Cron wrapper: no retry (the next tick re-runs the sweep), but alerting sees the failure."""
+
+    @functools.wraps(job)
+    async def wrapper(ctx: Ctx, **kwargs: str) -> None:
+        try:
+            await job(ctx, **kwargs)
+        except Exception as exc:
+            _dead_letter(job, ctx, attempts=1, exc=exc)
+            raise
 
     return wrapper
 
@@ -80,14 +107,23 @@ def _coroutine(job: Job) -> WorkerCoroutine:
 
 def _registered() -> list[Function]:
     return [
-        func(_coroutine(with_retries(job)), name=job.__name__, max_tries=MAX_TRIES)
+        func(
+            _coroutine(with_retries(job)),
+            name=job.__name__,
+            max_tries=MAX_TRIES,
+            keep_result=0,
+            keep_result_forever=False,
+        )
         for job in _EVENT_JOBS
     ]
 
 
 def _every_five_minutes(job: Job) -> CronJob:
     return cron(
-        _coroutine(job), name=job.__name__, minute=set(range(0, 60, 5)), run_at_startup=False
+        _coroutine(log_failures(job)),
+        name=job.__name__,
+        minute=set(range(0, 60, 5)),
+        run_at_startup=False,
     )
 
 
@@ -123,7 +159,7 @@ class WorkerSettings:
         _every_five_minutes(identity_jobs.expire_purchase_approvals),
         _every_five_minutes(identity_jobs.expire_impersonation_sessions),
         cron(
-            _coroutine(identity_jobs.purge_expired_tokens),
+            _coroutine(log_failures(identity_jobs.purge_expired_tokens)),
             name="purge_expired_tokens",
             hour=3,
             minute=0,
@@ -134,6 +170,8 @@ class WorkerSettings:
     on_shutdown = shutdown
     max_tries = MAX_TRIES
     retry_jobs = True
+    keep_result = 0  # never keep finished jobs: their kwargs hold raw tokens
+    keep_result_forever = False
     # Read from the environment directly: importing this module must not require full Settings.
     redis_settings = RedisSettings.from_dsn(
         os.environ.get("APP_REDIS_URL", "redis://localhost:6379")
