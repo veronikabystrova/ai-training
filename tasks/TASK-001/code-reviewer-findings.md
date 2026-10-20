@@ -1,3 +1,166 @@
+# Code Review — TASK-001 Phase G (Tasks 25-28: ARQ worker + jobs, storage cleanup, permission matrix + cross-tenant gate, rate-limit/TTL/privacy sweeps, OpenAPI contract, load scenarios, README)
+
+Scope: `230aefe..226ccb7` (base `ffa8112`): `096ce32`, `36ed2bd`, `53de02f`, `c94aab2`, `b4349f8`, `64cba19`, `9ba77ed`,
+`bf4cba4`, `226ccb7`. Reviewed against plan Tasks 25-28, `specs/api-designer-spec.md` (Resolved decisions 8-17),
+`specs/architect-architecture.md`, `.claude/DOD.md` (Standard). Decisions 8-13 and 17 and the argon2 p=4 note are treated as settled.
+Decision 15 is re-raised only because its stated premise turned out to be wrong (see Major #3).
+
+## Summary
+
+Phase G is solid. The worker layer stays thin: jobs unpack kwargs and call services. Every notification re-reads
+current state before it sends, and the `SET NX EX` once-guard plus release-on-failure stops a retry from
+sending the same mail twice. Storage deletes run after commit and are limited to `avatars/`/`logos/`. The permission
+suite (404 cells: 48 routes x 8 roles, plus 18 cross-tenant pairs) is driven by data and checks itself: it fails if a
+route is added without a matrix row. Lint, format, mypy (strict) and all 982 tests pass, with 98% coverage.
+
+No Critical issues. There are 3 Major issues: ARQ keeps raw one-time tokens in Redis for 1 h after each job, the
+raw (unsanitised) SVG upload stays public in the bucket, and the `/auth/register` OpenAPI `201` is still a union.
+For the register case a fix exists, so decision 15's premise ("FastAPI cannot ...") is wrong. There are 8 Minor
+issues, including the 4 confirmed `PytestWarning`s.
+
+Answers to the three known items:
+1. **Register OpenAPI**: confirmed. The served schema has `201: anyOf[AuthResponse, LinkedResponse]` and `200: LinkedResponse`.
+   Adding `responses={201: {"model": AuthResponse}, 200: ...}` while keeping `response_model` does **not** fix it. It
+   produces a malformed merged schema (`{"$ref": AuthResponse, "anyOf": [...]}`), which was verified with a minimal app
+   on FastAPI 0.144.0. What works is `response_model=None` + `responses={201: {"model": AuthResponse}, 200: {"model": LinkedResponse}}`.
+   See Major #3.
+2. **Raw SVG left in the bucket**: confirmed, and it matters more than storage hygiene (stored XSS on the media origin). See Major #2.
+3. **PytestWarning**: confirmed, 4 warnings caused by the module-level `pytestmark = MODULE_LOOP`. See Minor #1.
+
+## Issues Found
+
+### Critical (Must Fix)
+- None.
+
+### Major (Should Fix)
+
+- [ ] **[Major] ARQ keeps raw one-time tokens (and `new_email`) in Redis for an hour after each job** —
+  `app/jobs/worker.py:79-83,116-131`. ARQ 0.28 writes every finished job (success **or** failure) to `arq:result:<id>`
+  with its kwargs (`arq/jobs.py serialize_result: 'k': kwargs`), and keeps it for `keep_result` = 3600 s by default.
+  Neither `WorkerSettings` nor `func(...)` overrides this. So the raw tokens for `send_password_reset` (TTL 1 h),
+  `send_trainer_invite`, `send_verification_email` and `send_email_change` stay readable in Redis for about their
+  whole useful life after the mail has gone out. That undoes the "DB stores only hashes" rule, and the
+  dead-letter log's care to leave kwargs out. Anyone who can read Redis (a shared instance, a `MONITOR`/dump,
+  a backup) can take over an account.
+  **Fix:** set `keep_result = 0` on `WorkerSettings` (and/or `keep_result=0` in `_registered()`'s `func(...)`). Nothing
+  reads job results. Add a test that `WorkerSettings.keep_result == 0` and that every registered `Function` has
+  `keep_result_s == 0`. Record in the spec that a queued or retrying job still holds the raw token until it
+  runs (this is unavoidable and short), so Redis must be private and protected by ACLs.
+
+- [ ] **[Major] The raw, unsanitised SVG stays public under `logos/` after confirm** —
+  `app/services/branding_service.py:110-137`. When an SVG is confirmed, a sanitised copy is written under a new
+  served key, but the client's original object at `key` is never deleted. It lives under the same `logos/` prefix that
+  `media_base_url` serves publicly, with `Content-Type: image/svg+xml`. A trainer can upload an SVG with `<script>`,
+  confirm it, and then share `https://media.../logos/<raw-key>`. That URL runs script on the media origin (stored XSS,
+  phishing from a trusted domain). The upload URL also stays valid for `presign_ttl_seconds`, so the raw object can be
+  overwritten after confirm. And an SVG that is presigned but **never confirmed** has the same exposure, because
+  nothing ever cleans it up.
+  **Fix (short term):** after the commit, when `served_key != key`, call
+  `enqueue_best_effort(self._jobs, DELETE_OBJECT_JOB, key=key)`. The key is under `logos/`, so
+  `StorageCleanupService` accepts it. Add a test that confirming an SVG enqueues the delete of the raw key.
+  **Fix (structural, recommended):** presign uploads under a prefix the CDN does not serve (e.g. `uploads/logos/...`,
+  added to `MEDIA_PREFIXES`) and add an S3 lifecycle rule that expires unconfirmed uploads after 1 day. Also make the
+  media origin send `Content-Security-Policy: sandbox; default-src 'none'` and `X-Content-Type-Options: nosniff`.
+  Record the choice as a spec decision. This also closes the overwrite-after-confirm window, which an immediate
+  delete alone does not.
+
+- [ ] **[Major] `POST /auth/register` still documents `201` as `AuthResponse | LinkedResponse`, and spec decision 15 states a
+  wrong premise** — `app/api/v1/auth/routes.py:254-267`, `specs/api-designer-spec.md` decision 15,
+  `tests/test_openapi_contract.py:154-160`. Verified results:
+
+  | Route config | Served `201` | Served `200` |
+  |---|---|---|
+  | current (`response_model=AuthResponse \| LinkedResponse`, `responses={200: Linked}`) | `anyOf[Auth, Linked]` | `Linked` |
+  | `response_model` kept + `responses={201: Auth, 200: Linked}` | `{"$ref": Auth, "anyOf": [...]}` (malformed) | `Linked` |
+  | `response_model=None` + `responses={201: {"model": AuthResponse, ...}, 200: {"model": LinkedResponse, ...}}` | `$ref AuthResponse` | `$ref LinkedResponse` |
+
+  A generated client therefore types the 201 body as a union, and the contract test only checks that both codes are present.
+  **Fix:** use the third form. The handler already returns concrete model instances, so the body on the wire does not
+  change. `response_model=None` must be explicit, otherwise FastAPI infers the union from the return annotation.
+  Rewrite decision 15 to say the split is documented. In the contract test, assert
+  `responses["201"]...schema == {"$ref": ".../AuthResponse"}` and `["200"] == {"$ref": ".../LinkedResponse"}`.
+
+### Minor (Consider)
+
+- [ ] **[Minor] 4 `PytestWarning`s: asyncio mark on sync tests** — `tests/permissions/test_matrix.py:20` (`pytestmark = MODULE_LOOP`)
+  marks the four sync meta-tests (lines 35, 55, 61, 68). pytest-asyncio may turn this warning into an error in a later
+  release. **Fix:** remove the module `pytestmark` and decorate only `test_matrix_cell` with `@MODULE_LOOP`, or move
+  the four meta-tests to `tests/permissions/test_matrix_meta.py`. Optionally add
+  `filterwarnings = ["error::pytest.PytestWarning"]` to `pyproject.toml` so this cannot creep back in.
+- [ ] **[Minor] Errors that can never succeed are retried 4 times before the dead letter** — `app/jobs/worker.py:58-73`,
+  `app/services/storage_cleanup_service.py:18`. `ValueError("not a media key")`, a bad `UUID(...)` in a job's kwargs,
+  or a missing ctx entry fail the same way on every attempt, but they still back off for 2+4+8+16 s. **Fix:** add a
+  `PermanentJobError` (or treat `ValueError`/`TypeError` as permanent) that `with_retries` dead-letters on the first attempt.
+- [ ] **[Minor] Cron jobs bypass `with_retries` and the dead-letter log** — `app/jobs/worker.py:117-128`. If the nightly
+  `purge_expired_tokens` or a 5-minute expiry sweep fails, it shows only in ARQ's own log and never as the
+  structured `job.dead_letter` event that alerting would watch. Retrying is not needed, because the next tick re-runs
+  the sweep. **Fix:** wrap the cron coroutines in a small `log_failures` decorator that emits `job.failed` with
+  `job`/`error_type` and then re-raises.
+- [ ] **[Minor] `notify_parent_approval_request` does not skip an erased parent** — `app/services/notification_service.py:120-135`.
+  Every other method checks `status is UserStatus.deleted`, but this one does not. An erased parent's email is
+  `deleted-<id>@<ERASED_EMAIL_DOMAIN>`, so the mail would go to the placeholder address and bounce. There is no enqueue
+  site in Epic-01 (decision 12), but the method is registered. **Fix:** add the `parent.status is UserStatus.deleted` guard and a test.
+- [ ] **[Minor] One `content` dict is shared by all 258 error responses** — `app/api/openapi.py:12,48`. The post-processor
+  assigns the same `_ENVELOPE_CONTENT` object to every 4xx/5xx response (`id()` check: 1 distinct object). Anything that
+  later mutates one response in place (a schema customiser, a test, docs tooling) changes all of them.
+  **Fix:** `response["content"] = {"application/json": {"schema": dict(_ENVELOPE_REF)}}` for each response.
+- [ ] **[Minor] `_send_once` gives the claim back on `CancelledError`** — `app/services/notification_service.py:207-211`.
+  `except BaseException` also catches the ARQ job-timeout cancellation. If the provider accepted the mail and the job
+  was then cancelled, the retry sends it again. That is acceptable, but the module docstring promises "never doubles a
+  mail". **Fix:** either release only on `Exception`, or soften the docstring to say "at most once except when a job
+  times out after the provider accepted".
+- [ ] **[Minor] k6 `admin_directory.startTime` only works when `DURATION` is in seconds** — `tests/load/scenarios.js:73`.
+  `` `${2 * parseInt(DURATION, 10)}s` `` turns `DURATION=1m` into `"2s"`, so the admin scenario overlaps the other two
+  and its p95 is measured while the CPU is busy with login. Also, `loginFlow` requests reuse the `name: 'setup-login'` tag, so the
+  measured login traffic is labelled as setup. **Fix:** require `DURATION_S` (an integer) and build both start times
+  from it, and pass the tag through as a parameter (`login(email, 'login')`).
+- [ ] **[Minor] The cross-tenant gate covers only id-in-path routes** — `tests/permissions/matrix.py:213-218`.
+  `is_tenant_scoped` pairs only templated paths (plus `/me/approvals`). List routes such as `GET /trainer/share-links`
+  and `GET /me/players` are not checked for **leaking tenant B rows**, only for answering 200. The per-route
+  suites may cover this, but the merge gate (`-m gate`) does not. **Fix:** add a `gate` test that
+  lists from tenant A and asserts that none of tenant B's seeded ids (`w.b.*`) appear in the body.
+
+### Positive Notes
+
+- `NotificationService` re-validates before sending: tokens must be live and owned by the user (`live_owner`),
+  approvals must still be pending or decided, and accounts must not be erased. Idempotency keys use `hash_token(token)`, never the raw token.
+- The dead-letter log leaves out kwargs on purpose, and a test asserts that a raw token is absent.
+- Storage cleanup is limited to `avatars/`/`logos/` prefixes, runs after commit, is best effort and idempotent. Erasure
+  collects avatar and logo keys **before** the scrub nulls them, including child logins' avatars.
+- `ArqJobQueue` opens its pool lazily behind a lock and closes it in the lifespan, so `create_app` needs no Redis
+  (this is tested).
+- The permission matrix is defined as data, with self-checking meta-tests: discovery uses OpenAPI with a `>= 48` floor, every role gets a
+  cell, and every tenant-scoped route has a 404 pair. Seeding once per module with a SAVEPOINT for each cell keeps
+  roughly 400 HTTP cells fast.
+- The privacy sweep has guards against passing vacuously (`assert names`, `assert events`), and it covers both structlog and stdlib logs.
+- The argon2 test parses the encoded hash (`extract_parameters`) instead of timing it, so it is deterministic and checks the spec value p=4.
+- The OpenAPI contract test parses the spec's headings and `Status Codes` lines, so spec and code cannot drift apart
+  without a failing test.
+- The seed script uses binary `COPY` with a citext codec, refuses to run twice, and uses one hash with production parameters so no rehash is triggered.
+
+## Verification Evidence (DoD Standard tier, run in this review)
+
+Run with the worktree venv binaries at `226ccb7` (clean working tree):
+
+| Check | Command | Result |
+|---|---|---|
+| Lint | `.venv/bin/ruff check .` | All checks passed |
+| Format | `.venv/bin/ruff format --check .` | 196 files already formatted |
+| Types | `.venv/bin/mypy app tests` | Success: no issues found in 196 source files |
+| Tests | `.venv/bin/pytest -q --cov=app` | **982 passed**, 7 warnings (3 testcontainers deprecation, **4 PytestWarning** in `test_matrix.py`) in 130 s |
+| Coverage | same | 98% total; `jobs/worker.py` 83% (startup/shutdown), `core/storage.py` 77% (S3 adapter) |
+| File naming | `tasks/TASK-001/*` | all skill-prefixed |
+| Uncommitted | `git status` | clean |
+
+Probes run during the review:
+- Minimal FastAPI 0.144.0 app: three register configurations, giving the served schemas in the table under Major #3.
+- `create_app(...).openapi()`: register `201` = `anyOf[AuthResponse, LinkedResponse]`; error `content` objects: 1 distinct of 258.
+- `arq` 0.28.0 source: `Worker(keep_result=3600)` default; `serialize_result` stores `'k': kwargs`.
+- `pytest tests/permissions/test_matrix.py -k "not test_matrix_cell"`: 4 `PytestWarning` (asyncio mark on sync tests).
+
+---
+
+
 # Code Review — TASK-001 Phase F (Tasks 21-24: trainer share links + availability reads, branding + logo, public preview/branding, admin directory/provisioning/lifecycle/erasure/impersonation start)
 
 Scope: `ac2a322..156434c` (`2c4e199`, `6d03ad4`, `cf7b929`, `3b17408`, `156434c`, and the decision commit `8aacab4`).
