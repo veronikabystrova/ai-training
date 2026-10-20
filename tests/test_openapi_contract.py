@@ -183,3 +183,15 @@ def test_error_responses_do_not_share_one_content_object(openapi: dict[str, Any]
     assert len(contents) > 100
     assert len({id(c) for c in contents}) == len(contents)
     assert len({id(_body_schema({"content": c})) for c in contents}) == len(contents)
+
+
+def test_bearer_scheme_is_declared_for_swagger_authorize(openapi: dict[str, Any]) -> None:
+    schemes = openapi["components"]["securitySchemes"]
+    assert any(s == {"type": "http", "scheme": "bearer"} for s in schemes.values())
+
+
+def test_authenticated_routes_declare_bearer_security(openapi: dict[str, Any]) -> None:
+    ops = _operations(openapi)
+    assert ops[("GET", f"{API}/me")].get("security")
+    assert ops[("POST", f"{API}/auth/register")].get("security")  # optional principal
+    assert not ops[("POST", f"{API}/auth/login")].get("security")

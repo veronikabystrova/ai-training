@@ -17,6 +17,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import Depends, Header, Query, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import and_, false, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -231,6 +232,12 @@ async def _resolve(
     )
 
 
+# Declares the bearer scheme in OpenAPI (Swagger "Authorize"). Parsing and the 401 stay in
+# ``_bearer_token`` so the error envelope and ``WWW-Authenticate`` header are unchanged.
+_bearer_scheme = HTTPBearer(auto_error=False)
+BearerDocDep = Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)]
+
+
 def _bearer_token(request: Request) -> str | None:
     header = request.headers.get("Authorization")
     if header is None:
@@ -318,7 +325,11 @@ async def _authenticate(
 
 
 async def current_principal(
-    request: Request, session: SessionDep, issuer: IssuerDep, clock: ClockDep
+    request: Request,
+    session: SessionDep,
+    issuer: IssuerDep,
+    clock: ClockDep,
+    _bearer: BearerDocDep,
 ) -> Principal:
     # No must_change_password gate: pending trainers cannot log in, and password/setup
     # activates and clears the flag atomically (password/change dropped 2026-10-18).
@@ -329,7 +340,11 @@ async def current_principal(
 
 
 async def optional_principal(
-    request: Request, session: SessionDep, issuer: IssuerDep, clock: ClockDep
+    request: Request,
+    session: SessionDep,
+    issuer: IssuerDep,
+    clock: ClockDep,
+    _bearer: BearerDocDep,
 ) -> Principal | None:
     token = _bearer_token(request)
     if token is None:
@@ -338,7 +353,11 @@ async def optional_principal(
 
 
 async def optional_principal_any_tenure(
-    request: Request, session: SessionDep, issuer: IssuerDep, clock: ClockDep
+    request: Request,
+    session: SessionDep,
+    issuer: IssuerDep,
+    clock: ClockDep,
+    _bearer: BearerDocDep,
 ) -> Principal | None:
     """``optional_principal`` that also accepts a coach without an active tenure.
 
