@@ -12,6 +12,23 @@ const BASE_URL = __ENV.BASE_URL || 'http://localhost:8000';
 const API = `${BASE_URL}/api/v1`;
 const SEEDED_USERS = parseInt(__ENV.SEEDED_USERS || '10000', 10);
 const DURATION = __ENV.DURATION || '30s';
+
+// k6 durations are unit-suffixed and may be compound ("90s", "1m", "1h30m", "1500ms").
+function durationSeconds(text) {
+  const unit = { h: 3600, m: 60, s: 1, ms: 0.001 };
+  let total = 0;
+  let rest = text;
+  while (rest.length > 0) {
+    const part = /^(\d+(?:\.\d+)?)(ms|h|m|s)/.exec(rest);
+    if (part === null) {
+      fail(`unsupported DURATION ${text}; use k6 units such as 90s, 1m or 1h30m`);
+    }
+    total += parseFloat(part[1]) * unit[part[2]];
+    rest = rest.slice(part[0].length);
+  }
+  return total;
+}
+
 const PASSWORD = __ENV.LOAD_PASSWORD || 'Load-Test-Passw0rd-xK9!';
 const ADMIN_EMAIL = 'load-admin@example.com';
 const ME_RATE = parseInt(__ENV.ME_RATE || '100', 10); // requests per second
@@ -31,10 +48,10 @@ function randomPlayer() {
   return FIRST_PLAYER + Math.floor(Math.random() * (SEEDED_USERS - FIRST_PLAYER));
 }
 
-function login(email) {
+function login(email, name) {
   return http.post(`${API}/auth/login`, JSON.stringify({ email, password: PASSWORD }), {
     headers: JSON_HEADERS,
-    tags: { name: 'setup-login' },
+    tags: { name },
   });
 }
 
@@ -69,7 +86,7 @@ const ALL_SCENARIOS = {
     duration: DURATION,
     preAllocatedVUs: 20,
     maxVUs: 100,
-    startTime: `${2 * parseInt(DURATION, 10)}s`,
+    startTime: `${Math.ceil(2 * durationSeconds(DURATION))}s`, // after me_read and login
   },
 };
 
@@ -98,13 +115,13 @@ export const options = {
 };
 
 export function setup() {
-  const admin = login(ADMIN_EMAIL);
+  const admin = login(ADMIN_EMAIL, 'setup-login');
   if (admin.status !== 200) {
     fail(`admin login failed (${admin.status}): is the database seeded and the rate limit raised?`);
   }
   const players = [];
   for (let i = 0; i < TOKEN_POOL; i++) {
-    const r = login(playerEmail(FIRST_PLAYER + i));
+    const r = login(playerEmail(FIRST_PLAYER + i), 'setup-login');
     if (r.status !== 200) {
       fail(`player login failed (${r.status}): ${r.body}`);
     }
@@ -120,7 +137,7 @@ export function meRead(data) {
 }
 
 export function loginFlow() {
-  const r = login(playerEmail(randomPlayer()));
+  const r = login(playerEmail(randomPlayer()), 'login');
   check(r, { 'login 200': (res) => res.status === 200 });
 }
 
