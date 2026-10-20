@@ -204,7 +204,7 @@ async def verify_email(payload: VerifyEmailRequest, service: AuthServiceDep) -> 
     summary="Resend the email verification link",
     dependencies=[Depends(rate_limit(RouteClass.verify_resend_user))],
     responses={
-        200: {"description": "already_verified"},
+        200: {"model": StatusResponse, "description": "Already verified"},
         401: {"description": "Not authenticated"},
         429: _ERRORS[429],
     },

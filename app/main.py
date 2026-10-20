@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.middleware import CorrelationIdMiddleware, ImpersonationMiddleware
+from app.api.openapi import install_openapi
 from app.api.v1.admin.routes import router as admin_router
 from app.api.v1.auth.routes import router as auth_router
 from app.api.v1.me.approvals import router as me_approvals_router
@@ -66,6 +67,7 @@ def create_app(settings: Settings | None = None, *, clock: Clock | None = None) 
     )
 
     install_error_handlers(app)
+    install_openapi(app)
     # Starlette wraps in reverse order: the last middleware added is the outermost.
     app.add_middleware(ImpersonationMiddleware)
     app.add_middleware(CorrelationIdMiddleware)

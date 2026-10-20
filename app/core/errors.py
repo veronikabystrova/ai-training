@@ -5,8 +5,26 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+class ErrorDetail(BaseModel):
+    field: str | None = None
+    message: str
+
+
+class ErrorBody(BaseModel):
+    code: str
+    message: str
+    details: list[ErrorDetail | dict[str, Any]] = []
+
+
+class ErrorResponse(BaseModel):
+    """The error envelope (api-designer-spec Conventions); documents every non-2xx response."""
+
+    error: ErrorBody
 
 
 class DomainError(Exception):
